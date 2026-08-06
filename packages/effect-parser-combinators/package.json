@@ -1,0 +1,34 @@
+{
+  "name": "@texoport/effect-parser-combinators",
+  "version": "0.1.0",
+  "description": "Parse-only Effect combinators for text input.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": "github:saiashirwad/texoport",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "prepublishOnly": "pnpm build"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0-beta.104"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-beta.104"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
