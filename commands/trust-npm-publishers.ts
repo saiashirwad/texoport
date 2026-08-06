@@ -40,7 +40,7 @@ export const trustNpmPublishers = Command.make("trust-npm-publishers").pipe(
         packages,
         Effect.fn(function* (name) {
           yield* Console.log(`Configuring npm trusted publishing for ${name}`)
-          yield* ChildProcess.make`npm trust github ${name} --repo ${repository} --file ${workflow} --allow-publish --yes`.pipe(
+          yield* ChildProcess.make({ stdout: "inherit", stderr: "inherit" })`npm trust github ${name} --repo ${repository} --file ${workflow} --allow-publish --yes`.pipe(
             (process) => spawner.exitCode(process),
             Effect.filterOrFail(
               (exitCode) => exitCode === 0,
