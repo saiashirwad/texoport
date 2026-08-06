@@ -1,5 +1,13 @@
 # @texoport/effect-ai-codex
 
-Effect `LanguageModel` provider for a signed-in ChatGPT Codex subscription. Install it with `effect` and `@effect/platform-node`, then provide `CodexLanguageModel.model()` to your Effect AI program.
+Use your signed-in ChatGPT Codex subscription from an Effect AI program. It shells out to `codex`, so you need the CLI installed and logged in.
 
-The `codex` CLI must be on `PATH` and authenticated.
+```sh
+pnpm add @texoport/effect-ai-codex effect @effect/platform-node
+```
+
+```ts
+import * as CodexLanguageModel from "@texoport/effect-ai-codex"
+
+CodexLanguageModel.model()
+```

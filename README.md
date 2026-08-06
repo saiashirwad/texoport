@@ -1,18 +1,18 @@
 # @texoport
 
-This is my pnpm monorepo for independently published packages, mostly related to Effect. It currently contains:
+My pnpm monorepo. Most of what's here will be Effect-related, but I'm leaving room for the odd package that isn't.
 
 - `@texoport/effect-ai-claude`, an Effect `LanguageModel` provider that calls the signed-in `claude` CLI.
 - `@texoport/effect-ai-codex`, an Effect `LanguageModel` provider that calls the signed-in `codex` CLI.
 
-## Daily work
+## Working here
 
-Run `pnpm check` before opening a PR. When a change should ship, run `pnpm changeset`, select the affected package and bump type, and commit the generated markdown file with the code. Changesets keeps the two package versions independent.
+Run `pnpm check` before opening a PR. If the change needs a release, run `pnpm changeset`, pick the package and version bump, then commit the markdown file it writes. The Claude and Codex packages get their own versions.
 
 ## Releases
 
-Merging a changeset to `main` creates or updates a **Version Packages** pull request. Merging that PR publishes the versioned packages, creates GitHub releases, and generates changelogs. The release workflow uses npm trusted publishing, so it has no reusable npm publish token.
+When a changeset reaches `main`, the release workflow opens or updates a Version Packages PR. Merge that PR and it publishes the packages, creates GitHub releases, and writes the changelogs. It uses npm trusted publishing, so there is no publish token sitting in GitHub secrets.
 
-Before the first release, configure a trusted publisher for each package on npm with repository `saiashirwad/texoport` and workflow `.github/workflows/release.yml`; allow `npm publish`. The workflow file and the `id-token: write` permission must match that configuration exactly. See npm's [trusted publishing guide](https://docs.npmjs.com/trusted-publishers/).
+Before the first release, add a trusted publisher for each package on npm. Use `saiashirwad/texoport` and `.github/workflows/release.yml`, then allow `npm publish`. The workflow name and `id-token: write` permission have to match npm's configuration exactly. npm's [trusted publishing guide](https://docs.npmjs.com/trusted-publishers/) has the setup screens.
 
-For a local one-off publish, log in with `npm login`, run `pnpm version-packages`, inspect the result, then run `pnpm release`.
+For a local release, run `npm login`, `pnpm version-packages`, inspect the version changes, then run `pnpm release`.

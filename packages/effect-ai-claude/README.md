@@ -1,5 +1,13 @@
 # @texoport/effect-ai-claude
 
-Effect `LanguageModel` provider for a signed-in Claude Code subscription. Install it with `effect` and `@effect/platform-node`, then provide `ClaudeLanguageModel.model()` to your Effect AI program.
+Use your signed-in Claude Code subscription from an Effect AI program. It shells out to `claude`, so you need the CLI installed and logged in.
 
-The `claude` CLI must be on `PATH` and authenticated.
+```sh
+pnpm add @texoport/effect-ai-claude effect @effect/platform-node
+```
+
+```ts
+import * as ClaudeLanguageModel from "@texoport/effect-ai-claude"
+
+ClaudeLanguageModel.model("sonnet")
+```
