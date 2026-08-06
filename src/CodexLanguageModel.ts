@@ -13,6 +13,8 @@ import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import { runTurnWithTools } from "./internal/codexAppServer.ts"
 import { parseCodexCapture } from "./internal/codexEnvelope.ts"
+import { DEFAULT_TIMEOUT } from "./internal/defaults.ts"
+import { unknownError } from "./internal/errors.ts"
 import { flattenPrompt } from "./internal/prompt.ts"
 import { type Completion, toParts, toStreamParts } from "./internal/response.ts"
 import { schemaAstToJsonSchemaArg } from "./internal/schema.ts"
@@ -29,6 +31,24 @@ export interface Config {
 }
 
 type Requires = CommandExecutor.CommandExecutor | FileSystem.FileSystem | Path.Path
+
+interface ResolvedConfig {
+  readonly model?: string | undefined
+  readonly bin: string
+  readonly cwd?: string | undefined
+  readonly timeout: Duration.Duration
+  readonly sandbox: "read-only" | "workspace-write" | "danger-full-access"
+  readonly extraArgs?: ReadonlyArray<string> | undefined
+}
+
+const resolveConfig = (config: Config = {}): ResolvedConfig => ({
+  ...(config.model !== undefined ? { model: config.model } : {}),
+  bin: config.bin ?? "codex",
+  ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+  timeout: Duration.decode(config.timeout ?? DEFAULT_TIMEOUT),
+  sandbox: config.sandbox ?? "read-only",
+  ...(config.extraArgs !== undefined ? { extraArgs: config.extraArgs } : {})
+})
 
 export const model = (
   modelId?: string,
@@ -51,14 +71,15 @@ export const make = (
     const executor = yield* CommandExecutor.CommandExecutor
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
+    const config = resolveConfig(defaults)
     const services = { executor, fs, path }
 
     const base = yield* LanguageModel.make({
       generateText: (options) =>
-        completeExec(options, defaults, services, "generateText").pipe(Effect.map(toParts)),
+        completeExec(options, config, services, "generateText").pipe(Effect.map(toParts)),
       streamText: (options) =>
         Stream.unwrap(
-          completeExec(options, defaults, services, "streamText").pipe(Effect.map(toStreamParts))
+          completeExec(options, config, services, "streamText").pipe(Effect.map(toStreamParts))
         )
     })
 
@@ -69,11 +90,11 @@ export const make = (
         runTurnWithTools({
           ...input,
           config: {
-            bin: defaults.bin ?? "codex",
-            model: defaults.model,
-            cwd: defaults.cwd,
-            sandbox: defaults.sandbox ?? "read-only",
-            timeoutMs: Duration.toMillis(Duration.decode(defaults.timeout ?? "3 minutes"))
+            bin: config.bin,
+            ...(config.model !== undefined ? { model: config.model } : {}),
+            ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+            sandbox: config.sandbox,
+            timeoutMs: Duration.toMillis(config.timeout)
           }
         }),
       executor
@@ -86,7 +107,7 @@ export const make = (
 
 const completeExec = (
   options: LanguageModel.ProviderOptions,
-  defaults: Config,
+  config: ResolvedConfig,
   services: {
     readonly executor: CommandExecutor.CommandExecutor
     readonly fs: FileSystem.FileSystem
@@ -95,9 +116,9 @@ const completeExec = (
   method: "generateText" | "streamText"
 ): Effect.Effect<Completion, AiError.AiError> =>
   Effect.gen(function*() {
+    const fail = unknownError("CodexLanguageModel")
     const { system, user } = flattenPrompt(options.prompt)
     const promptText = system !== undefined ? `${system}\n\n${user}` : user
-    const timeout = Duration.decode(defaults.timeout ?? "3 minutes")
     // LanguageModel.make derives generateObject from generateText with a JSON
     // response format, so attribute errors accordingly.
     const effectiveMethod = options.responseFormat.type === "json" ? "generateObject" : method
@@ -108,57 +129,47 @@ const completeExec = (
       "--ephemeral",
       "--skip-git-repo-check",
       "--sandbox",
-      defaults.sandbox ?? "read-only",
+      config.sandbox,
       "--color",
       "never"
     ]
 
-    if (defaults.model !== undefined) args.push("--model", defaults.model)
-    if (defaults.extraArgs !== undefined) args.push(...defaults.extraArgs)
+    if (config.model !== undefined) args.push("--model", config.model)
+    if (config.extraArgs !== undefined) args.push(...config.extraArgs)
 
     const runSpawn = (finalArgs: ReadonlyArray<string>): Effect.Effect<SpawnCapture, AiError.AiError> =>
       runCli({
-        command: defaults.bin ?? "codex",
+        command: config.bin,
         args: finalArgs,
         stdin: "",
-        cwd: defaults.cwd,
+        cwd: config.cwd,
         module: "CodexLanguageModel",
         method: effectiveMethod,
-        timeout
+        timeout: config.timeout
       }).pipe(Effect.provideService(CommandExecutor.CommandExecutor, services.executor))
 
-    if (options.responseFormat.type === "json") {
-      const jsonSchema = schemaAstToJsonSchemaArg(options.responseFormat.schema.ast)
-      const capture = yield* Effect.acquireUseRelease(
-        services.fs.makeTempDirectory({ prefix: "effect-ai-subs-" }).pipe(
-          Effect.mapError((cause) =>
-            new AiError.UnknownError({
-              module: "CodexLanguageModel",
-              method: effectiveMethod,
-              description: "failed to create temp dir for output schema",
-              cause
-            })
-          )
-        ),
-        (dir) =>
-          Effect.gen(function*() {
-            const schemaPath = services.path.join(dir, "schema.json")
-            yield* services.fs.writeFileString(schemaPath, jsonSchema).pipe(
-              Effect.mapError((cause) =>
-                new AiError.UnknownError({
-                  module: "CodexLanguageModel",
-                  method: effectiveMethod,
-                  description: "failed to write output schema",
-                  cause
-                })
-              )
-            )
-            return yield* runSpawn([...args, "--output-schema", schemaPath, promptText])
-          }),
-        (dir) => services.fs.remove(dir, { recursive: true }).pipe(Effect.orDie)
-      )
-      return yield* parseCodexCapture(capture, effectiveMethod)
+    if (options.responseFormat.type !== "json") {
+      return yield* parseCodexCapture(yield* runSpawn([...args, promptText]), effectiveMethod)
     }
 
-    return yield* parseCodexCapture(yield* runSpawn([...args, promptText]), effectiveMethod)
+    const jsonSchema = schemaAstToJsonSchemaArg(options.responseFormat.schema.ast)
+    const capture = yield* Effect.acquireUseRelease(
+      services.fs.makeTempDirectory({ prefix: "effect-ai-subs-" }).pipe(
+        Effect.mapError((cause) =>
+          fail(effectiveMethod, "failed to create temp dir for output schema", cause)
+        )
+      ),
+      (dir) =>
+        Effect.gen(function*() {
+          const schemaPath = services.path.join(dir, "schema.json")
+          yield* services.fs.writeFileString(schemaPath, jsonSchema).pipe(
+            Effect.mapError((cause) =>
+              fail(effectiveMethod, "failed to write output schema", cause)
+            )
+          )
+          return yield* runSpawn([...args, "--output-schema", schemaPath, promptText])
+        }),
+      (dir) => services.fs.remove(dir, { recursive: true }).pipe(Effect.orDie)
+    )
+    return yield* parseCodexCapture(capture, effectiveMethod)
   })

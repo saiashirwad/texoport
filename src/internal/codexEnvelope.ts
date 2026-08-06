@@ -2,8 +2,12 @@ import * as AiError from "@effect/ai/AiError"
 import * as Effect from "effect/Effect"
 import * as Either from "effect/Either"
 import * as Schema from "effect/Schema"
+import { unknownError } from "./errors.ts"
 import type { Completion, Usage } from "./response.ts"
 import type { SpawnCapture } from "./spawn.ts"
+
+const MODULE = "CodexLanguageModel"
+const fail = unknownError(MODULE)
 
 const Number_ = Schema.Number.pipe(Schema.finite())
 
@@ -98,21 +102,16 @@ export const parseCodexCapture = (
 
     // An error event fails the turn even if partial text was emitted first.
     if (error !== undefined) {
-      return yield* new AiError.UnknownError({
-        module: "CodexLanguageModel",
-        method,
-        description: error
-      })
+      return yield* fail(method, error)
     }
 
     if (capture.exitCode !== 0) {
-      return yield* new AiError.UnknownError({
-        module: "CodexLanguageModel",
+      return yield* fail(
         method,
-        description: `codex exited ${capture.exitCode}: ${
+        `codex exited ${capture.exitCode}: ${
           capture.stderr.trim() || capture.stdout.trim() || "(empty)"
         }`
-      })
+      )
     }
 
     return {

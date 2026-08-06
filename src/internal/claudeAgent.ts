@@ -11,22 +11,32 @@
 import * as AiError from "@effect/ai/AiError"
 import type * as LanguageModel from "@effect/ai/LanguageModel"
 import type * as Prompt from "@effect/ai/Prompt"
-import type * as Response from "@effect/ai/Response"
 import type * as Tool from "@effect/ai/Tool"
 import type { CommandExecutor } from "@effect/platform"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
-import * as Duration from "effect/Duration"
+import type * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Runtime from "effect/Runtime"
 import { parseClaudeCapture } from "./claudeEnvelope.ts"
+import { unknownError } from "./errors.ts"
 import { flattenPrompt } from "./prompt.ts"
-import type { Completion, ToolParts } from "./response.ts"
+import type { Completion } from "./response.ts"
 import { schemaAstToJsonSchemaArg } from "./schema.ts"
 import { runCli } from "./spawn.ts"
-import { type AnyToolkit, callTool, type ToolMethod, toolMetadata } from "./toolkit.ts"
+import {
+  type AnyToolkit,
+  encodeToolResultText,
+  invokeTool,
+  type ToolMethod,
+  type ToolPartBuffer,
+  toolMetadata
+} from "./toolkit.ts"
+
+const MODULE = "ClaudeLanguageModel"
+const fail = unknownError(MODULE)
 
 export interface ClaudeAgentConfig {
   readonly model?: string | undefined
@@ -34,6 +44,7 @@ export interface ClaudeAgentConfig {
   readonly pathToClaude?: string | undefined
   readonly timeout: Duration.Duration
   readonly debug?: boolean | undefined
+  readonly extraArgs?: ReadonlyArray<string> | undefined
 }
 
 export interface ClaudeToolRunInput {
@@ -100,27 +111,14 @@ const listenGateway = (
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address()
       if (addr === null || typeof addr !== "object") {
-        resume(Effect.fail(
-          new AiError.UnknownError({
-            module: "ClaudeLanguageModel",
-            method,
-            description: "failed to bind tool gateway"
-          })
-        ))
+        resume(Effect.fail(fail(method, "failed to bind tool gateway")))
         return
       }
       resume(Effect.succeed({ port: addr.port, close }))
     })
 
     server.on("error", (cause) => {
-      resume(Effect.fail(
-        new AiError.UnknownError({
-          module: "ClaudeLanguageModel",
-          method,
-          description: "tool gateway listen error",
-          cause
-        })
-      ))
+      resume(Effect.fail(fail(method, "tool gateway listen error", cause)))
     })
 
     return Effect.sync(close)
@@ -134,74 +132,61 @@ export const runTurnWithTools = (
 ): Effect.Effect<
   {
     readonly completion: Completion
-    readonly toolParts: ToolParts
+    readonly toolParts: ToolPartBuffer
   },
   AiError.AiError,
   CommandExecutor.CommandExecutor
 > =>
   Effect.scoped(Effect.gen(function*() {
     const runtime = yield* Effect.runtime<never>()
-    const toolParts: Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded> = []
+    const toolParts: ToolPartBuffer = []
     let callSeq = 0
+    const { method, config, toolkit, tools, prompt, responseFormat } = input
 
     const startedAt = Date.now()
-    const log = input.config.debug === true
+    const log = config.debug === true
       ? (msg: string) => console.error(`[claude-agent +${Date.now() - startedAt}ms] ${msg}`)
       : () => {}
 
-    const mcpTools = input.tools.map(toolMetadata)
+    const mcpTools = tools.map(toolMetadata)
     const token = randomUUID()
 
     const gateway = yield* Effect.acquireRelease(
-      listenGateway(input.method, token, async (name, args) => {
+      listenGateway(method, token, async (name, args) => {
         const id = `call_${++callSeq}`
         const callStartedAt = Date.now()
         log(`tool call: ${name} ${JSON.stringify(args ?? {})}`)
-        toolParts.push({
-          type: "tool-call",
-          id,
-          name,
-          params: (args ?? {}) as Record<string, unknown>,
-          providerExecuted: false
-        })
 
         try {
-          const outcome = await Runtime.runPromise(runtime)(callTool(input.toolkit, name, args))
-
-          if (outcome._tag === "ok") {
-            log(`tool result: ${name} ${outcome.isFailure ? "failed" : "ok"} (${Date.now() - callStartedAt}ms)`)
+          const out = await Runtime.runPromise(runtime)(invokeTool(toolkit, toolParts, name, args, id))
+          log(
+            `tool ${out.isFailure ? "error" : "result"}: ${name} ` +
+              `${encodeToolResultText(out.result).slice(0, 120)} (${Date.now() - callStartedAt}ms)`
+          )
+          return out
+        } catch (error) {
+          // True runtime defect (invokeTool itself is total for handler failures).
+          const message = String(error)
+          log(`tool defect: ${name} ${message} (${Date.now() - callStartedAt}ms)`)
+          if (!toolParts.some((p) => p.type === "tool-call" && p.id === id)) {
+            toolParts.push({
+              type: "tool-call",
+              id,
+              name,
+              params: (args && typeof args === "object" ? args : {}) as Record<string, unknown>,
+              providerExecuted: false
+            })
+          }
+          if (!toolParts.some((p) => p.type === "tool-result" && p.id === id)) {
             toolParts.push({
               type: "tool-result",
               id,
               name,
-              result: outcome.encoded,
-              isFailure: outcome.isFailure,
+              result: message,
+              isFailure: true,
               providerExecuted: false
             })
-            return { isFailure: outcome.isFailure, result: outcome.encoded }
           }
-
-          log(`tool error: ${name} ${outcome.message} (${Date.now() - callStartedAt}ms)`)
-          toolParts.push({
-            type: "tool-result",
-            id,
-            name,
-            result: outcome.message,
-            isFailure: true,
-            providerExecuted: false
-          })
-          return { isFailure: true, result: outcome.message }
-        } catch (error) {
-          const message = String(error)
-          log(`tool defect: ${name} ${message} (${Date.now() - callStartedAt}ms)`)
-          toolParts.push({
-            type: "tool-result",
-            id,
-            name,
-            result: message,
-            isFailure: true,
-            providerExecuted: false
-          })
           return { isFailure: true, result: message }
         }
       }),
@@ -209,7 +194,7 @@ export const runTurnWithTools = (
     )
     log(`tool gateway listening on 127.0.0.1:${gateway.port}`)
 
-    const { system, user } = flattenPrompt(input.prompt)
+    const { system, user } = flattenPrompt(prompt)
 
     const mcpConfig = {
       mcpServers: {
@@ -241,26 +226,27 @@ export const runTurnWithTools = (
       allowed
     ]
 
-    if (input.config.model !== undefined) args.push("--model", input.config.model)
+    if (config.model !== undefined) args.push("--model", config.model)
     if (system !== undefined) args.push("--system-prompt", system)
-    if (input.responseFormat.type === "json") {
-      args.push("--json-schema", schemaAstToJsonSchemaArg(input.responseFormat.schema.ast))
+    if (responseFormat.type === "json") {
+      args.push("--json-schema", schemaAstToJsonSchemaArg(responseFormat.schema.ast))
     }
+    if (config.extraArgs !== undefined) args.push(...config.extraArgs)
 
     log(`spawning claude (${mcpTools.length} tools: ${mcpTools.map((t) => t.name).join(", ")})`)
     const capture = yield* runCli({
-      command: input.config.pathToClaude ?? "claude",
+      command: config.pathToClaude ?? "claude",
       args,
       stdin: user,
-      cwd: input.config.cwd,
-      module: "ClaudeLanguageModel",
-      method: input.method,
-      timeout: input.config.timeout,
-      onStderr: input.config.debug === true ? (chunk) => process.stderr.write(chunk) : undefined
+      cwd: config.cwd,
+      module: MODULE,
+      method,
+      timeout: config.timeout,
+      onStderr: config.debug === true ? (chunk) => process.stderr.write(chunk) : undefined
     })
     log(`claude exited with code ${capture.exitCode}`)
 
-    const completion = yield* parseClaudeCapture(capture, input.method)
+    const completion = yield* parseClaudeCapture(capture, method)
     log(`turn done: ${toolParts.length} tool parts, ${completion.text.length} chars of text`)
     return { completion, toolParts }
   }))

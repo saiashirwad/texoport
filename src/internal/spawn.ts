@@ -4,6 +4,7 @@ import type { PlatformError } from "@effect/platform/Error"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
+import { unknownError } from "./errors.ts"
 
 export interface SpawnInput {
   readonly command: string
@@ -60,25 +61,18 @@ export interface RunCliInput extends SpawnInput {
 /** Spawn a CLI, failing with a typed AiError on timeout or platform errors. */
 export const runCli = (
   input: RunCliInput
-): Effect.Effect<SpawnCapture, AiError.AiError, CommandExecutor.CommandExecutor> =>
-  spawn(input).pipe(
+): Effect.Effect<SpawnCapture, AiError.AiError, CommandExecutor.CommandExecutor> => {
+  const fail = unknownError(input.module)
+  return spawn(input).pipe(
     Effect.timeoutFail({
       duration: input.timeout,
       onTimeout: () =>
-        new AiError.UnknownError({
-          module: input.module,
-          method: input.method,
-          description: `${input.command} timed out after ${Duration.toMillis(input.timeout)}ms`
-        })
+        fail(input.method, `${input.command} timed out after ${Duration.toMillis(input.timeout)}ms`)
     }),
     Effect.mapError((error) =>
       AiError.isAiError(error)
         ? error
-        : new AiError.UnknownError({
-          module: input.module,
-          method: input.method,
-          description: `failed to spawn ${input.command}`,
-          cause: error
-        })
+        : fail(input.method, `failed to spawn ${input.command}`, error)
     )
   )
+}

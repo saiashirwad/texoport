@@ -13,6 +13,7 @@ import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import { runTurnWithTools } from "./internal/claudeAgent.ts"
 import { parseClaudeCapture } from "./internal/claudeEnvelope.ts"
+import { DEFAULT_TIMEOUT } from "./internal/defaults.ts"
 import { flattenPrompt } from "./internal/prompt.ts"
 import { type Completion, toParts, toStreamParts } from "./internal/response.ts"
 import { schemaAstToJsonSchemaArg } from "./internal/schema.ts"
@@ -28,6 +29,24 @@ export interface Config {
   /** Log spawn/tool-call progress with timings and tee the CLI's stderr live. */
   readonly debug?: boolean | undefined
 }
+
+interface ResolvedConfig {
+  readonly model?: string | undefined
+  readonly bin: string
+  readonly cwd?: string | undefined
+  readonly timeout: Duration.Duration
+  readonly extraArgs?: ReadonlyArray<string> | undefined
+  readonly debug: boolean
+}
+
+const resolveConfig = (config: Config = {}): ResolvedConfig => ({
+  ...(config.model !== undefined ? { model: config.model } : {}),
+  bin: config.bin ?? "claude",
+  ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+  timeout: Duration.decode(config.timeout ?? DEFAULT_TIMEOUT),
+  ...(config.extraArgs !== undefined ? { extraArgs: config.extraArgs } : {}),
+  debug: config.debug === true
+})
 
 export const model = (
   modelId?: string,
@@ -48,17 +67,17 @@ export const make = (
 ): Effect.Effect<LanguageModel.Service, never, CommandExecutor.CommandExecutor> =>
   Effect.gen(function*() {
     const executor = yield* CommandExecutor.CommandExecutor
-    const timeout = Duration.decode(defaults.timeout ?? "3 minutes")
+    const config = resolveConfig(defaults)
 
     const base = yield* LanguageModel.make({
       generateText: (options) =>
-        completeCli(options, defaults, "generateText").pipe(
+        completeCli(options, config, "generateText").pipe(
           Effect.provideService(CommandExecutor.CommandExecutor, executor),
           Effect.map(toParts)
         ),
       streamText: (options) =>
         Stream.unwrap(
-          completeCli(options, defaults, "streamText").pipe(
+          completeCli(options, config, "streamText").pipe(
             Effect.provideService(CommandExecutor.CommandExecutor, executor),
             Effect.map(toStreamParts)
           )
@@ -72,11 +91,12 @@ export const make = (
         runTurnWithTools({
           ...input,
           config: {
-            model: defaults.model,
-            cwd: defaults.cwd,
-            pathToClaude: defaults.bin,
-            timeout,
-            debug: defaults.debug
+            ...(config.model !== undefined ? { model: config.model } : {}),
+            ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+            pathToClaude: config.bin,
+            timeout: config.timeout,
+            debug: config.debug,
+            ...(config.extraArgs !== undefined ? { extraArgs: config.extraArgs } : {})
           }
         }),
       executor
@@ -89,36 +109,35 @@ export const make = (
 
 const completeCli = (
   options: LanguageModel.ProviderOptions,
-  defaults: Config,
+  config: ResolvedConfig,
   method: "generateText" | "streamText"
 ): Effect.Effect<Completion, AiError.AiError, CommandExecutor.CommandExecutor> =>
   Effect.gen(function*() {
     const { system, user } = flattenPrompt(options.prompt)
-    const timeout = Duration.decode(defaults.timeout ?? "3 minutes")
     // LanguageModel.make derives generateObject from generateText with a JSON
     // response format, so attribute errors accordingly.
     const effectiveMethod = options.responseFormat.type === "json" ? "generateObject" : method
     const args = ["-p", "--output-format", "json", "--tools", ""]
 
-    if (defaults.model !== undefined) args.push("--model", defaults.model)
+    if (config.model !== undefined) args.push("--model", config.model)
     if (system !== undefined) args.push("--system-prompt", system)
     if (options.responseFormat.type === "json") {
       args.push("--json-schema", schemaAstToJsonSchemaArg(options.responseFormat.schema.ast))
     }
-    if (defaults.extraArgs !== undefined) args.push(...defaults.extraArgs)
+    if (config.extraArgs !== undefined) args.push(...config.extraArgs)
 
     const startedAt = Date.now()
     const capture = yield* runCli({
-      command: defaults.bin ?? "claude",
+      command: config.bin,
       args,
       stdin: user,
-      cwd: defaults.cwd,
+      cwd: config.cwd,
       module: "ClaudeLanguageModel",
       method: effectiveMethod,
-      timeout,
-      onStderr: defaults.debug === true ? (chunk) => process.stderr.write(chunk) : undefined
+      timeout: config.timeout,
+      onStderr: config.debug ? (chunk) => process.stderr.write(chunk) : undefined
     })
-    if (defaults.debug === true) {
+    if (config.debug) {
       console.error(`[claude] exited ${capture.exitCode} after ${Date.now() - startedAt}ms`)
     }
 

@@ -8,7 +8,6 @@
 import * as AiError from "@effect/ai/AiError"
 import type * as LanguageModel from "@effect/ai/LanguageModel"
 import type * as Prompt from "@effect/ai/Prompt"
-import type * as Response from "@effect/ai/Response"
 import * as Tool from "@effect/ai/Tool"
 import { Command, type CommandExecutor } from "@effect/platform"
 import * as Deferred from "effect/Deferred"
@@ -20,9 +19,21 @@ import * as Queue from "effect/Queue"
 import * as Ref from "effect/Ref"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
+import { malformedOutput, unknownError } from "./errors.ts"
 import { flattenPrompt } from "./prompt.ts"
-import type { Completion, ToolParts, Usage } from "./response.ts"
-import { type AnyToolkit, callTool, type ToolMethod, toolMetadata } from "./toolkit.ts"
+import type { Completion, Usage } from "./response.ts"
+import {
+  type AnyToolkit,
+  encodeToolResultText,
+  invokeTool,
+  type ToolMethod,
+  type ToolPartBuffer,
+  toolMetadata
+} from "./toolkit.ts"
+
+const MODULE = "CodexLanguageModel"
+const fail = unknownError(MODULE)
+const badOutput = malformedOutput(MODULE)
 
 const decodeLine = Schema.decodeUnknownEither(Schema.parseJson(Schema.Unknown))
 const asRecord = Schema.decodeUnknownEither(
@@ -74,8 +85,72 @@ export interface ToolRunInput {
   readonly config: AppServerConfig
 }
 
+type Pending = Deferred.Deferred<unknown, AiError.AiError>
+
+type Inbound =
+  | { readonly kind: "rpc-response"; readonly id: string | number; readonly error?: unknown; readonly result?: unknown }
+  | { readonly kind: "rpc-request"; readonly id: string | number; readonly method: string; readonly params: Record<string, unknown> }
+  | { readonly kind: "notification"; readonly method: string; readonly params: Record<string, unknown> }
+  | { readonly kind: "ignore" }
+
+const classifyInbound = (msg: Record<string, unknown>): Inbound => {
+  const hasId = "id" in msg
+  const hasMethod = "method" in msg
+  const isResponse = hasId && ("result" in msg || "error" in msg) && !hasMethod
+
+  if (isResponse) {
+    return {
+      kind: "rpc-response",
+      id: msg["id"] as string | number,
+      ...("error" in msg ? { error: msg["error"] } : { result: msg["result"] })
+    }
+  }
+
+  const params = (msg["params"] !== undefined && typeof msg["params"] === "object" && msg["params"] !== null
+    ? msg["params"]
+    : {}) as Record<string, unknown>
+
+  if (hasMethod && hasId) {
+    return {
+      kind: "rpc-request",
+      id: msg["id"] as string | number,
+      method: String(msg["method"] ?? ""),
+      params
+    }
+  }
+
+  if (hasMethod) {
+    return {
+      kind: "notification",
+      method: String(msg["method"]),
+      params
+    }
+  }
+
+  return { kind: "ignore" }
+}
+
 const toDynamicTools = (tools: ReadonlyArray<Tool.Any>) =>
   tools.map((tool) => ({ type: "function" as const, ...toolMetadata(tool) }))
+
+const toolCallReply = (isFailure: boolean, result: unknown) => ({
+  success: !isFailure,
+  contentItems: [{ type: "inputText", text: encodeToolResultText(result) }]
+})
+
+const usageFromLast = (last: {
+  readonly inputTokens?: number | undefined
+  readonly outputTokens?: number | undefined
+  readonly totalTokens?: number | undefined
+  readonly reasoningOutputTokens?: number | undefined
+  readonly cachedInputTokens?: number | undefined
+}): Usage => ({
+  inputTokens: last.inputTokens,
+  outputTokens: last.outputTokens,
+  totalTokens: last.totalTokens,
+  reasoningTokens: last.reasoningOutputTokens,
+  cachedInputTokens: last.cachedInputTokens
+})
 
 /**
  * Run one user turn on app-server, executing Effect tools when requested.
@@ -85,27 +160,20 @@ export const runTurnWithTools = (
 ): Effect.Effect<
   {
     readonly completion: Completion
-    readonly toolParts: ToolParts
+    readonly toolParts: ToolPartBuffer
   },
   AiError.AiError,
   CommandExecutor.CommandExecutor
 > =>
   Effect.scoped(Effect.gen(function*() {
+    const { method, config, toolkit, tools, prompt, responseFormat } = input
     const process = yield* Command.start(
-      Command.make(input.config.bin, "app-server", "--stdio")
+      Command.make(config.bin, "app-server", "--stdio")
     ).pipe(
-      Effect.mapError((cause) =>
-        new AiError.UnknownError({
-          module: "CodexLanguageModel",
-          method: input.method,
-          description: "failed to spawn codex app-server",
-          cause
-        })
-      )
+      Effect.mapError((cause) => fail(method, "failed to spawn codex app-server", cause))
     )
 
     let nextId = 1
-    type Pending = Deferred.Deferred<unknown, AiError.AiError>
     const pending = yield* Ref.make(HashMap.empty<string | number, Pending>())
     const inbound = yield* Queue.unbounded<unknown>()
     const turnDone = yield* Deferred.make<void, AiError.AiError>()
@@ -129,32 +197,23 @@ export const runTurnWithTools = (
       // If the app-server exits (or the stream fails) the turn can never
       // complete; unblock the Deferred.await below instead of hanging until
       // the turn timeout.
-      Effect.ensuring(Deferred.fail(turnDone, new AiError.UnknownError({
-        module: "CodexLanguageModel",
-        method: input.method,
-        description: "codex app-server exited before completing the turn"
-      }))),
+      Effect.ensuring(Deferred.fail(turnDone, fail(method, "codex app-server exited before completing the turn"))),
       Effect.forkScoped
     )
 
     const write = (payload: unknown) =>
       Queue.offer(outbound, new TextEncoder().encode(`${JSON.stringify(payload)}\n`))
 
-    const request = (method: string, params: unknown): Effect.Effect<unknown, AiError.AiError> =>
+    const request = (rpcMethod: string, params: unknown): Effect.Effect<unknown, AiError.AiError> =>
       Effect.gen(function*() {
         const id = nextId++
         const deferred = yield* Deferred.make<unknown, AiError.AiError>()
         yield* Ref.update(pending, (m) => HashMap.set(m, id, deferred))
-        yield* write({ method, id, params })
+        yield* write({ method: rpcMethod, id, params })
         return yield* Deferred.await(deferred).pipe(
           Effect.timeoutFail({
-            duration: input.config.timeoutMs,
-            onTimeout: () =>
-              new AiError.UnknownError({
-                module: "CodexLanguageModel",
-                method: input.method,
-                description: `codex app-server request timed out: ${method}`
-              })
+            duration: config.timeoutMs,
+            onTimeout: () => fail(method, `codex app-server request timed out: ${rpcMethod}`)
           }),
           Effect.ensuring(Ref.update(pending, (m) => HashMap.remove(m, id)))
         )
@@ -162,70 +221,74 @@ export const runTurnWithTools = (
 
     const reply = (id: number | string, result: unknown) => write({ id, result })
 
-    const toolParts: Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded> = []
+    const toolParts: ToolPartBuffer = []
     let text = ""
     let usage: Usage | undefined
 
-    const handleServerRequest = (msg: Record<string, unknown>) =>
+    const handleToolCall = (id: string | number, params: Record<string, unknown>) =>
       Effect.gen(function*() {
-        const id = msg["id"] as number | string
-        const method = String(msg["method"] ?? "")
-        const params = (msg["params"] ?? {}) as Record<string, unknown>
+        const callId = String(params["callId"] ?? "")
+        const toolName = String(params["tool"] ?? "")
+        const args = params["arguments"]
+        const out = yield* invokeTool(toolkit, toolParts, toolName, args, callId)
+        yield* reply(id, toolCallReply(out.isFailure, out.result))
+      })
 
-        if (method === "item/tool/call") {
-          const callId = String(params["callId"] ?? "")
-          const toolName = String(params["tool"] ?? "")
-          const args = params["arguments"]
+    const handleServerRequest = (id: string | number, rpcMethod: string, params: Record<string, unknown>) => {
+      if (rpcMethod === "item/tool/call") return handleToolCall(id, params)
+      // Approval requests (commandExecution / fileChange / permissions /
+      // execCommandApproval / applyPatchApproval / …) are always declined:
+      // sandbox and approvalPolicy "never" are set at thread/start.
+      return reply(id, { decision: "decline" })
+    }
 
-          toolParts.push({
-            type: "tool-call",
-            id: callId,
-            name: toolName,
-            params: (args ?? {}) as Record<string, unknown>,
-            providerExecuted: false
-          })
+    const handleNotification = (rpcMethod: string, params: Record<string, unknown>) => {
+      if (rpcMethod === "item/completed") {
+        const item = decodeAgentMessageItem(params["item"])
+        if (Either.isRight(item)) text = item.right.text
+        return Effect.void
+      }
 
-          const outcome = yield* callTool(input.toolkit, toolName, args)
+      if (rpcMethod === "thread/tokenUsage/updated") {
+        const parsed = decodeTokenUsageParams(params)
+        const last = Either.isRight(parsed) ? parsed.right.tokenUsage?.last : undefined
+        if (last != null) usage = usageFromLast(last)
+        return Effect.void
+      }
 
-          if (outcome._tag === "ok") {
-            toolParts.push({
-              type: "tool-result",
-              id: callId,
-              name: toolName,
-              result: outcome.encoded,
-              isFailure: outcome.isFailure,
-              providerExecuted: false
-            })
-            yield* reply(id, {
-              success: !outcome.isFailure,
-              contentItems: [{
-                type: "inputText",
-                text: typeof outcome.encoded === "string"
-                  ? outcome.encoded
-                  : JSON.stringify(outcome.encoded) ?? ""
-              }]
-            })
-          } else {
-            toolParts.push({
-              type: "tool-result",
-              id: callId,
-              name: toolName,
-              result: outcome.message,
-              isFailure: true,
-              providerExecuted: false
-            })
-            yield* reply(id, {
-              success: false,
-              contentItems: [{ type: "inputText", text: outcome.message }]
-            })
-          }
-          return
+      if (rpcMethod === "turn/completed") {
+        const parsed = decodeTurnCompletedParams(params)
+        const turn = Either.isRight(parsed) ? parsed.right.turn : undefined
+        if (turn?.status === "failed") {
+          return Deferred.fail(turnDone, fail(method, `codex turn failed: ${JSON.stringify(turn.error)}`))
         }
+        for (const it of turn?.items ?? []) {
+          const item = decodeAgentMessageItem(it)
+          if (Either.isRight(item)) text = item.right.text
+        }
+        return Deferred.succeed(turnDone, undefined)
+      }
 
-        // Approval requests (commandExecution / fileChange / permissions /
-        // execCommandApproval / applyPatchApproval / …) are always declined:
-        // sandbox and approvalPolicy "never" are set at thread/start.
-        yield* reply(id, { decision: "decline" })
+      if (rpcMethod === "error") {
+        return Deferred.fail(
+          turnDone,
+          fail(method, `codex app-server error notification: ${JSON.stringify(params)}`)
+        )
+      }
+
+      return Effect.void
+    }
+
+    const settleResponse = (id: string | number, error: unknown | undefined, result: unknown | undefined) =>
+      Effect.gen(function*() {
+        const map = yield* Ref.get(pending)
+        const def = HashMap.get(map, id)
+        if (Option.isNone(def)) return
+        if (error !== undefined) {
+          yield* Deferred.fail(def.value, fail(method, `codex app-server error: ${JSON.stringify(error)}`))
+        } else {
+          yield* Deferred.succeed(def.value, result)
+        }
       })
 
     yield* Effect.forever(
@@ -233,89 +296,20 @@ export const runTurnWithTools = (
         const raw = yield* Queue.take(inbound)
         const rec = asRecord(raw)
         if (Either.isLeft(rec)) return
-        const msg = rec.right
 
-        if ("id" in msg && ("result" in msg || "error" in msg) && !("method" in msg)) {
-          const id = msg["id"] as number | string
-          const map = yield* Ref.get(pending)
-          const def = HashMap.get(map, id)
-          if (Option.isSome(def)) {
-            yield* Ref.update(pending, (m) => HashMap.remove(m, id))
-            if ("error" in msg) {
-              yield* Deferred.fail(
-                def.value,
-                new AiError.UnknownError({
-                  module: "CodexLanguageModel",
-                  method: input.method,
-                  description: `codex app-server error: ${JSON.stringify(msg["error"])}`
-                })
-              )
-            } else {
-              yield* Deferred.succeed(def.value, msg["result"])
-            }
-          }
-          return
-        }
-
-        if ("method" in msg && "id" in msg) {
-          yield* handleServerRequest(msg)
-          return
-        }
-
-        if ("method" in msg) {
-          const method = String(msg["method"])
-          const params = (msg["params"] ?? {}) as Record<string, unknown>
-
-          if (method === "item/completed") {
-            const item = decodeAgentMessageItem(params["item"])
-            if (Either.isRight(item)) text = item.right.text
-          }
-
-          if (method === "thread/tokenUsage/updated") {
-            const parsed = decodeTokenUsageParams(params)
-            const last = Either.isRight(parsed) ? parsed.right.tokenUsage?.last : undefined
-            if (last != null) {
-              usage = {
-                inputTokens: last.inputTokens,
-                outputTokens: last.outputTokens,
-                totalTokens: last.totalTokens,
-                reasoningTokens: last.reasoningOutputTokens,
-                cachedInputTokens: last.cachedInputTokens
-              }
-            }
-          }
-
-          if (method === "turn/completed") {
-            const parsed = decodeTurnCompletedParams(params)
-            const turn = Either.isRight(parsed) ? parsed.right.turn : undefined
-            if (turn?.status === "failed") {
-              yield* Deferred.fail(
-                turnDone,
-                new AiError.UnknownError({
-                  module: "CodexLanguageModel",
-                  method: input.method,
-                  description: `codex turn failed: ${JSON.stringify(turn.error)}`
-                })
-              )
-            } else {
-              for (const it of turn?.items ?? []) {
-                const item = decodeAgentMessageItem(it)
-                if (Either.isRight(item)) text = item.right.text
-              }
-              yield* Deferred.succeed(turnDone, undefined)
-            }
-          }
-
-          if (method === "error") {
-            yield* Deferred.fail(
-              turnDone,
-              new AiError.UnknownError({
-                module: "CodexLanguageModel",
-                method: input.method,
-                description: `codex app-server error notification: ${JSON.stringify(params)}`
-              })
-            )
-          }
+        const msg = classifyInbound(rec.right)
+        switch (msg.kind) {
+          case "rpc-response":
+            yield* settleResponse(msg.id, msg.error, msg.result)
+            return
+          case "rpc-request":
+            yield* handleServerRequest(msg.id, msg.method, msg.params)
+            return
+          case "notification":
+            yield* handleNotification(msg.method, msg.params)
+            return
+          case "ignore":
+            return
         }
       })
     ).pipe(Effect.forkScoped)
@@ -326,32 +320,24 @@ export const runTurnWithTools = (
     })
     yield* write({ method: "initialized" })
 
-    const { system, user } = flattenPrompt(input.prompt)
+    const { system, user } = flattenPrompt(prompt)
     const threadResult = yield* request("thread/start", {
       ephemeral: true,
       approvalPolicy: "never",
-      sandbox: input.config.sandbox,
-      ...(input.config.model !== undefined ? { model: input.config.model } : {}),
-      ...(input.config.cwd !== undefined ? { cwd: input.config.cwd } : {}),
+      sandbox: config.sandbox,
+      ...(config.model !== undefined ? { model: config.model } : {}),
+      ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
       ...(system !== undefined ? { developerInstructions: system } : {}),
-      dynamicTools: toDynamicTools(input.tools)
+      dynamicTools: toDynamicTools(tools)
     })
 
     const threadRec = asRecord(threadResult)
     if (Either.isLeft(threadRec)) {
-      return yield* new AiError.MalformedOutput({
-        module: "CodexLanguageModel",
-        method: input.method,
-        description: "invalid thread/start response"
-      })
+      return yield* badOutput(method, "invalid thread/start response")
     }
     const threadObj = asRecord(threadRec.right["thread"])
     if (Either.isLeft(threadObj) || typeof threadObj.right["id"] !== "string") {
-      return yield* new AiError.MalformedOutput({
-        module: "CodexLanguageModel",
-        method: input.method,
-        description: "thread/start missing thread.id"
-      })
+      return yield* badOutput(method, "thread/start missing thread.id")
     }
     const threadId = threadObj.right["id"]
 
@@ -359,21 +345,16 @@ export const runTurnWithTools = (
       threadId,
       input: [{ type: "text", text: user, text_elements: [] }]
     }
-    if (input.responseFormat.type === "json") {
-      turnParams["outputSchema"] = Tool.getJsonSchemaFromSchemaAst(input.responseFormat.schema.ast)
+    if (responseFormat.type === "json") {
+      turnParams["outputSchema"] = Tool.getJsonSchemaFromSchemaAst(responseFormat.schema.ast)
     }
 
     yield* request("turn/start", turnParams)
 
     yield* Deferred.await(turnDone).pipe(
       Effect.timeoutFail({
-        duration: input.config.timeoutMs,
-        onTimeout: () =>
-          new AiError.UnknownError({
-            module: "CodexLanguageModel",
-            method: input.method,
-            description: `codex turn timed out after ${input.config.timeoutMs}ms`
-          })
+        duration: config.timeoutMs,
+        onTimeout: () => fail(method, `codex turn timed out after ${config.timeoutMs}ms`)
       })
     )
 

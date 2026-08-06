@@ -2,8 +2,13 @@ import * as AiError from "@effect/ai/AiError"
 import type * as Response from "@effect/ai/Response"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
+import { malformedOutput, unknownError } from "./errors.ts"
 import type { Completion } from "./response.ts"
 import type { SpawnCapture } from "./spawn.ts"
+
+const MODULE = "ClaudeLanguageModel"
+const fail = unknownError(MODULE)
+const badOutput = malformedOutput(MODULE)
 
 const Number_ = Schema.Number.pipe(Schema.finite())
 
@@ -38,6 +43,11 @@ const finishReason = (reason: string | undefined): Response.FinishReason => {
   }
 }
 
+const exitDescription = (capture: SpawnCapture, fallback: string | null | undefined) =>
+  `claude exited ${capture.exitCode}: ${
+    capture.stderr.trim() || fallback || capture.stdout.trim() || "(empty)"
+  }`
+
 export const parseClaudeCapture = (
   capture: SpawnCapture,
   method = "generateText"
@@ -46,40 +56,18 @@ export const parseClaudeCapture = (
     const envelope = yield* decodeEnvelope(capture.stdout).pipe(
       Effect.mapError((cause) =>
         capture.exitCode !== 0
-          ? new AiError.UnknownError({
-            module: "ClaudeLanguageModel",
-            method,
-            description: `claude exited ${capture.exitCode}: ${
-              capture.stderr.trim() || capture.stdout.trim() || "(empty)"
-            }`,
-            cause
-          })
-          : new AiError.MalformedOutput({
-            module: "ClaudeLanguageModel",
-            method,
-            description: "invalid claude JSON envelope",
-            cause
-          })
+          ? fail(method, exitDescription(capture, null), cause)
+          : badOutput(method, "invalid claude JSON envelope", cause)
       )
     )
 
     // A non-zero exit is a failure even when the JSON envelope parses cleanly.
     if (capture.exitCode !== 0) {
-      return yield* new AiError.UnknownError({
-        module: "ClaudeLanguageModel",
-        method,
-        description: `claude exited ${capture.exitCode}: ${
-          capture.stderr.trim() || envelope.result || "(empty)"
-        }`
-      })
+      return yield* fail(method, exitDescription(capture, envelope.result))
     }
 
     if (envelope.is_error) {
-      return yield* new AiError.UnknownError({
-        module: "ClaudeLanguageModel",
-        method,
-        description: envelope.result ?? "claude reported an error"
-      })
+      return yield* fail(method, envelope.result ?? "claude reported an error")
     }
 
     return {

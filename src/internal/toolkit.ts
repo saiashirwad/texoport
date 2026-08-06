@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect"
 import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
+import { malformedOutput } from "./errors.ts"
 import { assembleParts, assembleStreamParts, type Completion, type ToolParts } from "./response.ts"
 
 export type AnyToolkit = Toolkit.WithHandler<Record<string, Tool.Any>>
@@ -31,6 +32,9 @@ export interface ToolTurn {
   readonly completion: Completion
   readonly toolParts: ToolParts
 }
+
+/** Mutable buffer both agent paths push tool call/result parts into. */
+export type ToolPartBuffer = Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded>
 
 /** MCP/dynamic-tool metadata for one Effect tool. */
 export const toolMetadata = (tool: Tool.Any) => ({
@@ -54,6 +58,54 @@ export const callTool = (
     Effect.catchAll((error) => Effect.succeed({ _tag: "err" as const, message: String(error) }))
   )
 
+/**
+ * Record a tool-call part, run the handler, record the tool-result part.
+ * Shared by Claude MCP gateway and Codex app-server tool paths.
+ */
+export const invokeTool = (
+  toolkit: AnyToolkit,
+  toolParts: ToolPartBuffer,
+  name: string,
+  args: unknown,
+  id: string
+): Effect.Effect<{ readonly isFailure: boolean; readonly result: unknown }> =>
+  Effect.gen(function*() {
+    toolParts.push({
+      type: "tool-call",
+      id,
+      name,
+      params: (args && typeof args === "object" ? args : {}) as Record<string, unknown>,
+      providerExecuted: false
+    })
+
+    const outcome = yield* callTool(toolkit, name, args)
+    if (outcome._tag === "ok") {
+      toolParts.push({
+        type: "tool-result",
+        id,
+        name,
+        result: outcome.encoded,
+        isFailure: outcome.isFailure,
+        providerExecuted: false
+      })
+      return { isFailure: outcome.isFailure, result: outcome.encoded }
+    }
+
+    toolParts.push({
+      type: "tool-result",
+      id,
+      name,
+      result: outcome.message,
+      isFailure: true,
+      providerExecuted: false
+    })
+    return { isFailure: true, result: outcome.message }
+  })
+
+/** Stringify a tool result for transport (MCP content / Codex contentItems). */
+export const encodeToolResultText = (result: unknown): string =>
+  typeof result === "string" ? result : JSON.stringify(result) ?? ""
+
 const resolveToolkit = (
   toolkit: AnyToolkit | Effect.Effect<AnyToolkit, any, any> | undefined
 ): Effect.Effect<AnyToolkit | undefined, any, any> => {
@@ -61,7 +113,7 @@ const resolveToolkit = (
   return Effect.isEffect(toolkit) ? toolkit : Effect.succeed(toolkit)
 }
 
-const toolsEnabled = (toolkit: AnyToolkit | undefined) =>
+const toolsEnabled = (toolkit: AnyToolkit | undefined): toolkit is AnyToolkit =>
   toolkit !== undefined && Object.values(toolkit.tools).length > 0
 
 /**
@@ -74,6 +126,8 @@ export const makeToolkitService = (
   runTurn: (input: ToolTurnInput) => Effect.Effect<ToolTurn, AiError.AiError, CommandExecutor.CommandExecutor>,
   executor: CommandExecutor.CommandExecutor
 ): LanguageModel.Service => {
+  const failMalformed = malformedOutput(module)
+
   const withTools = (
     toolkit: AnyToolkit,
     options: { readonly prompt: Prompt.RawInput },
@@ -94,7 +148,7 @@ export const makeToolkitService = (
         const toolkit = yield* resolveToolkit(options.toolkit as never)
         if (!toolsEnabled(toolkit)) return yield* base.generateText(options as never)
 
-        const { completion, toolParts } = yield* withTools(toolkit!, options, { type: "text" }, "generateText")
+        const { completion, toolParts } = yield* withTools(toolkit, options, { type: "text" }, "generateText")
         return new LanguageModel.GenerateTextResponse(assembleParts(completion, toolParts) as never)
       }),
 
@@ -103,7 +157,7 @@ export const makeToolkitService = (
         const toolkit = yield* resolveToolkit(options.toolkit as never)
         if (!toolsEnabled(toolkit)) return yield* base.generateObject(options as never)
 
-        const { completion, toolParts } = yield* withTools(toolkit!, options, {
+        const { completion, toolParts } = yield* withTools(toolkit, options, {
           type: "json",
           objectName: options.objectName ?? "object",
           schema: options.schema
@@ -111,12 +165,7 @@ export const makeToolkitService = (
         const parts = assembleParts(completion, toolParts)
         const value = yield* Schema.decode(Schema.parseJson(options.schema))(completion.text).pipe(
           Effect.mapError((cause) =>
-            new AiError.MalformedOutput({
-              module,
-              method: "generateObject",
-              description: "Generated object failed schema validation",
-              cause
-            })
+            failMalformed("generateObject", "Generated object failed schema validation", cause)
           )
         )
         return new LanguageModel.GenerateObjectResponse(value, parts as never)
@@ -128,7 +177,7 @@ export const makeToolkitService = (
           const toolkit = yield* resolveToolkit(options.toolkit as never)
           if (!toolsEnabled(toolkit)) return base.streamText(options as never)
 
-          const { completion, toolParts } = yield* withTools(toolkit!, options, { type: "text" }, "streamText")
+          const { completion, toolParts } = yield* withTools(toolkit, options, { type: "text" }, "streamText")
           // Pseudo-stream: full turn (incl. tools) then emit stream parts.
           return assembleStreamParts(completion, toolParts) as Stream.Stream<Response.StreamPart<any>>
         })

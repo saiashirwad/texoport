@@ -68,7 +68,9 @@ rl.on("line", async (line) => {
     const args = params?.arguments ?? {}
     try {
       const out = await callGateway(name, args)
-      const text = typeof out.result === "string" ? out.result : JSON.stringify(out.result) ?? ""
+      const text = typeof out.result === "string"
+        ? out.result
+        : (JSON.stringify(out.result) ?? "")
       write({
         jsonrpc: "2.0",
         id,
