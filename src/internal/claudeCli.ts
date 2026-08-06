@@ -1,15 +1,17 @@
 import type { LanguageModel } from "effect/unstable/ai"
 import { schemaToJsonSchemaArg } from "./schema.ts"
 
+export interface ClaudeMcpArg {
+  readonly configJson: string
+  readonly allowedTools: string
+}
+
 export interface ClaudePrintArgsInput {
   readonly model?: string | undefined
   readonly system?: string | undefined
   readonly responseFormat: LanguageModel.ProviderOptions["responseFormat"]
   readonly extraArgs?: ReadonlyArray<string> | undefined
-  readonly mcp?: {
-    readonly configJson: string
-    readonly allowedTools: string
-  } | undefined
+  readonly mcp?: ClaudeMcpArg | undefined
 }
 
 export const buildClaudePrintArgs = (input: ClaudePrintArgsInput): Array<string> => {

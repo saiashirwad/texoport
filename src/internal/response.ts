@@ -76,7 +76,7 @@ export const toParts = (result: Completion): Array<Response.PartEncoded> => {
         text: result.text,
         metadata: {
           [result.providerKey]: {
-            raw: JSON.parse(JSON.stringify(result.raw)) as never
+            raw: structuredClone(result.raw) as never
           }
         }
       }

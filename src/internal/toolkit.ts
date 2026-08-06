@@ -114,8 +114,8 @@ export const invokeTool = (
       if (last === undefined) return failed("tool handler produced no result")
       return { isFailure: last.isFailure, result: last.encodedResult } satisfies ToolInvokeResult
     }).pipe(
-      Effect.catch((): Effect.Effect<ToolInvokeResult> =>
-        Effect.succeed(failed("tool handler failed"))
+      Effect.catch((error): Effect.Effect<ToolInvokeResult> =>
+        Effect.succeed(failed(error instanceof Error ? error.message : String(error)))
       )
     )
 

@@ -43,9 +43,11 @@ export const resolveBase = (config: BaseConfig, defaultBin: string): ResolvedBas
   timeout: Duration.fromInputUnsafe(config.timeout ?? DEFAULT_TIMEOUT)
 })
 
-/** LanguageModel.make derives generateObject from generateText with a JSON format. */
+/** LanguageModel.make derives generateObject/streamObject from the text methods with a JSON format. */
 export const methodForFormat = (
   responseFormat: { readonly type: string },
   method: "generateText" | "streamText"
-): "generateText" | "generateObject" | "streamText" =>
-  responseFormat.type === "json" ? "generateObject" : method
+): "generateText" | "generateObject" | "streamText" | "streamObject" =>
+  responseFormat.type === "json"
+    ? method === "streamText" ? "streamObject" : "generateObject"
+    : method

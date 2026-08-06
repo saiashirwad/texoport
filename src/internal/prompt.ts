@@ -11,7 +11,7 @@ const textParts = (parts: ReadonlyArray<{ readonly type: string; readonly text?:
 /** Collapse an Effect AI prompt into system + user text for one-shot CLI print mode. */
 export const flattenPrompt = (prompt: Prompt.Prompt): FlattenedPrompt => {
   const systems: Array<string> = []
-  const turns: Array<string> = []
+  const turns: Array<{ readonly role: string; readonly text: string }> = []
 
   for (const message of prompt.content) {
     switch (message.role) {
@@ -19,30 +19,29 @@ export const flattenPrompt = (prompt: Prompt.Prompt): FlattenedPrompt => {
         systems.push(message.content)
         break
       case "user":
-        turns.push(`User: ${textParts(message.content)}`)
+        turns.push({ role: "User", text: textParts(message.content) })
         break
       case "assistant":
-        turns.push(`Assistant: ${textParts(message.content)}`)
+        turns.push({ role: "Assistant", text: textParts(message.content) })
         break
       case "tool":
         for (const part of message.content) {
           if (part.type !== "tool-result") continue
-          turns.push(
-            `Tool result (${part.name}): ${
-              typeof part.result === "string" ? part.result : JSON.stringify(part.result)
-            }`
-          )
+          turns.push({
+            role: `Tool result (${part.name})`,
+            text: typeof part.result === "string" ? part.result : JSON.stringify(part.result)
+          })
         }
         break
     }
   }
 
-  return {
-    system: systems.length > 0 ? systems.join("\n\n") : undefined,
-    user: turns.length === 0
-      ? " "
-      : turns.length === 1 && turns[0]!.startsWith("User: ")
-      ? turns[0]!.slice(6)
-      : turns.join("\n\n")
-  }
+  // A lone user turn reads as the prompt itself; anything else is a transcript.
+  const user = turns.length === 0
+    ? " "
+    : turns.length === 1 && turns[0]!.role === "User"
+    ? turns[0]!.text
+    : turns.map((turn) => `${turn.role}: ${turn.text}`).join("\n\n")
+
+  return { system: systems.length > 0 ? systems.join("\n\n") : undefined, user }
 }
