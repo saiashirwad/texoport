@@ -83,20 +83,11 @@ export const make = (
         )
     })
 
+    // ResolvedConfig matches AppServerConfig — pass through, no field remap.
     return makeToolkitService(
       "CodexLanguageModel",
       base,
-      (input) =>
-        runTurnWithTools({
-          ...input,
-          config: {
-            bin: config.bin,
-            ...(config.model !== undefined ? { model: config.model } : {}),
-            ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
-            sandbox: config.sandbox,
-            timeoutMs: Duration.toMillis(config.timeout)
-          }
-        }),
+      (input) => runTurnWithTools({ ...input, config }),
       executor
     )
   })

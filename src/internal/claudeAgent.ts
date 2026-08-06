@@ -20,11 +20,11 @@ import { fileURLToPath } from "node:url"
 import type * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Runtime from "effect/Runtime"
+import { buildClaudePrintArgs } from "./claudeCli.ts"
 import { parseClaudeCapture } from "./claudeEnvelope.ts"
 import { unknownError } from "./errors.ts"
 import { flattenPrompt } from "./prompt.ts"
 import type { Completion } from "./response.ts"
-import { schemaAstToJsonSchemaArg } from "./schema.ts"
 import { runCli } from "./spawn.ts"
 import {
   type AnyToolkit,
@@ -38,12 +38,13 @@ import {
 const MODULE = "ClaudeLanguageModel"
 const fail = unknownError(MODULE)
 
+/** Resolved runtime config shared with ClaudeLanguageModel (same shape, no remapping). */
 export interface ClaudeAgentConfig {
   readonly model?: string | undefined
+  readonly bin: string
   readonly cwd?: string | undefined
-  readonly pathToClaude?: string | undefined
   readonly timeout: Duration.Duration
-  readonly debug?: boolean | undefined
+  readonly debug: boolean
   readonly extraArgs?: ReadonlyArray<string> | undefined
 }
 
@@ -144,7 +145,7 @@ export const runTurnWithTools = (
     const { method, config, toolkit, tools, prompt, responseFormat } = input
 
     const startedAt = Date.now()
-    const log = config.debug === true
+    const log = config.debug
       ? (msg: string) => console.error(`[claude-agent +${Date.now() - startedAt}ms] ${msg}`)
       : () => {}
 
@@ -157,38 +158,13 @@ export const runTurnWithTools = (
         const callStartedAt = Date.now()
         log(`tool call: ${name} ${JSON.stringify(args ?? {})}`)
 
-        try {
-          const out = await Runtime.runPromise(runtime)(invokeTool(toolkit, toolParts, name, args, id))
-          log(
-            `tool ${out.isFailure ? "error" : "result"}: ${name} ` +
-              `${encodeToolResultText(out.result).slice(0, 120)} (${Date.now() - callStartedAt}ms)`
-          )
-          return out
-        } catch (error) {
-          // True runtime defect (invokeTool itself is total for handler failures).
-          const message = String(error)
-          log(`tool defect: ${name} ${message} (${Date.now() - callStartedAt}ms)`)
-          if (!toolParts.some((p) => p.type === "tool-call" && p.id === id)) {
-            toolParts.push({
-              type: "tool-call",
-              id,
-              name,
-              params: (args && typeof args === "object" ? args : {}) as Record<string, unknown>,
-              providerExecuted: false
-            })
-          }
-          if (!toolParts.some((p) => p.type === "tool-result" && p.id === id)) {
-            toolParts.push({
-              type: "tool-result",
-              id,
-              name,
-              result: message,
-              isFailure: true,
-              providerExecuted: false
-            })
-          }
-          return { isFailure: true, result: message }
-        }
+        // invokeTool is total (handler failures + defects → failed tool result).
+        const out = await Runtime.runPromise(runtime)(invokeTool(toolkit, toolParts, name, args, id))
+        log(
+          `tool ${out.isFailure ? "error" : "result"}: ${name} ` +
+            `${encodeToolResultText(out.result).slice(0, 120)} (${Date.now() - callStartedAt}ms)`
+        )
+        return out
       }),
       (gateway) => Effect.sync(() => gateway.close())
     )
@@ -210,39 +186,27 @@ export const runTurnWithTools = (
       }
     }
 
-    const allowed = mcpTools.map((t) => `mcp__effect__${t.name}`).join(",")
-    const args = [
-      "-p",
-      "--output-format",
-      "json",
-      "--tools",
-      "",
-      "--permission-mode",
-      "bypassPermissions",
-      "--strict-mcp-config",
-      "--mcp-config",
-      JSON.stringify(mcpConfig),
-      "--allowedTools",
-      allowed
-    ]
-
-    if (config.model !== undefined) args.push("--model", config.model)
-    if (system !== undefined) args.push("--system-prompt", system)
-    if (responseFormat.type === "json") {
-      args.push("--json-schema", schemaAstToJsonSchemaArg(responseFormat.schema.ast))
-    }
-    if (config.extraArgs !== undefined) args.push(...config.extraArgs)
+    const args = buildClaudePrintArgs({
+      model: config.model,
+      system,
+      responseFormat,
+      extraArgs: config.extraArgs,
+      mcp: {
+        configJson: JSON.stringify(mcpConfig),
+        allowedTools: mcpTools.map((t) => `mcp__effect__${t.name}`).join(",")
+      }
+    })
 
     log(`spawning claude (${mcpTools.length} tools: ${mcpTools.map((t) => t.name).join(", ")})`)
     const capture = yield* runCli({
-      command: config.pathToClaude ?? "claude",
+      command: config.bin,
       args,
       stdin: user,
       cwd: config.cwd,
       module: MODULE,
       method,
       timeout: config.timeout,
-      onStderr: config.debug === true ? (chunk) => process.stderr.write(chunk) : undefined
+      onStderr: config.debug ? (chunk) => process.stderr.write(chunk) : undefined
     })
     log(`claude exited with code ${capture.exitCode}`)
 

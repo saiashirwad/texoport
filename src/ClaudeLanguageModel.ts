@@ -12,11 +12,11 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import { runTurnWithTools } from "./internal/claudeAgent.ts"
+import { buildClaudePrintArgs } from "./internal/claudeCli.ts"
 import { parseClaudeCapture } from "./internal/claudeEnvelope.ts"
 import { DEFAULT_TIMEOUT } from "./internal/defaults.ts"
 import { flattenPrompt } from "./internal/prompt.ts"
 import { type Completion, toParts, toStreamParts } from "./internal/response.ts"
-import { schemaAstToJsonSchemaArg } from "./internal/schema.ts"
 import { runCli } from "./internal/spawn.ts"
 import { makeToolkitService } from "./internal/toolkit.ts"
 
@@ -84,21 +84,11 @@ export const make = (
         )
     })
 
+    // ResolvedConfig matches ClaudeAgentConfig — pass through, no field remap.
     return makeToolkitService(
       "ClaudeLanguageModel",
       base,
-      (input) =>
-        runTurnWithTools({
-          ...input,
-          config: {
-            ...(config.model !== undefined ? { model: config.model } : {}),
-            ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
-            pathToClaude: config.bin,
-            timeout: config.timeout,
-            debug: config.debug,
-            ...(config.extraArgs !== undefined ? { extraArgs: config.extraArgs } : {})
-          }
-        }),
+      (input) => runTurnWithTools({ ...input, config }),
       executor
     )
   })
@@ -117,19 +107,16 @@ const completeCli = (
     // LanguageModel.make derives generateObject from generateText with a JSON
     // response format, so attribute errors accordingly.
     const effectiveMethod = options.responseFormat.type === "json" ? "generateObject" : method
-    const args = ["-p", "--output-format", "json", "--tools", ""]
-
-    if (config.model !== undefined) args.push("--model", config.model)
-    if (system !== undefined) args.push("--system-prompt", system)
-    if (options.responseFormat.type === "json") {
-      args.push("--json-schema", schemaAstToJsonSchemaArg(options.responseFormat.schema.ast))
-    }
-    if (config.extraArgs !== undefined) args.push(...config.extraArgs)
 
     const startedAt = Date.now()
     const capture = yield* runCli({
       command: config.bin,
-      args,
+      args: buildClaudePrintArgs({
+        model: config.model,
+        system,
+        responseFormat: options.responseFormat,
+        extraArgs: config.extraArgs
+      }),
       stdin: user,
       cwd: config.cwd,
       module: "ClaudeLanguageModel",

@@ -3,6 +3,12 @@ import { describe, it } from "node:test"
 import { Effect, Either, Schema } from "effect"
 import { ClaudeEnvelope, parseClaudeCapture } from "../src/internal/claudeEnvelope.ts"
 import { CodexEvent, parseCodexCapture } from "../src/internal/codexEnvelope.ts"
+import {
+  classifyInbound,
+  interpretNotification,
+  threadIdFromStartResult
+} from "../src/internal/codexProtocol.ts"
+import { asToolParams } from "../src/internal/toolkit.ts"
 
 describe("ClaudeEnvelope", () => {
   it("decodes success JSON", () => {
@@ -96,5 +102,60 @@ describe("CodexEvent", () => {
 
   it("rejects null JSON", () => {
     assert.ok(Either.isLeft(Schema.decodeUnknownEither(Schema.parseJson(CodexEvent))("null")))
+  })
+})
+
+describe("codexProtocol", () => {
+  it("classifies rpc response / request / notification", () => {
+    assert.equal(
+      classifyInbound({ id: 1, result: { ok: true } }).kind,
+      "rpc-response"
+    )
+    assert.equal(
+      classifyInbound({ id: 2, method: "item/tool/call", params: { tool: "x" } }).kind,
+      "rpc-request"
+    )
+    assert.equal(
+      classifyInbound({ method: "turn/completed", params: { turn: { status: "completed" } } }).kind,
+      "notification"
+    )
+    assert.equal(classifyInbound({ noise: true }).kind, "ignore")
+  })
+
+  it("interprets turn notifications into signals", () => {
+    assert.deepEqual(
+      interpretNotification("item/completed", {
+        item: { type: "agentMessage", text: "hi" }
+      }),
+      { _tag: "SetText", text: "hi" }
+    )
+    assert.equal(
+      interpretNotification("turn/completed", { turn: { status: "failed", error: "boom" } })._tag,
+      "Fail"
+    )
+    assert.equal(
+      interpretNotification("turn/completed", {
+        turn: {
+          status: "completed",
+          items: [{ type: "agentMessage", text: "done" }]
+        }
+      })._tag,
+      "Complete"
+    )
+  })
+
+  it("extracts thread.id from thread/start result", () => {
+    assert.equal(threadIdFromStartResult({ thread: { id: "t-1" } }), "t-1")
+    assert.equal(threadIdFromStartResult({ thread: {} }), undefined)
+    assert.equal(threadIdFromStartResult(null), undefined)
+  })
+})
+
+describe("asToolParams", () => {
+  it("keeps plain objects and rejects arrays/primitives", () => {
+    assert.deepEqual(asToolParams({ a: 1 }), { a: 1 })
+    assert.deepEqual(asToolParams([1, 2]), {})
+    assert.deepEqual(asToolParams("x"), {})
+    assert.deepEqual(asToolParams(null), {})
   })
 })
