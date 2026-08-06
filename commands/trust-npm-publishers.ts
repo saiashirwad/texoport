@@ -1,4 +1,4 @@
-import { Console, Effect, FileSystem, Path, Schema, Array } from "effect"
+import { Array, Console, Data, Effect, FileSystem, Path, Schema } from "effect"
 import { Command } from "effect/unstable/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 
@@ -9,6 +9,11 @@ const PackageJson = Schema.Struct({
 
 const repository = "saiashirwad/texoport"
 const workflow = "release.yml"
+
+export class TrustedPublisherSetupError extends Data.TaggedError("TrustedPublisherSetupError")<{
+  readonly packageName: string
+  readonly exitCode: number
+}> {}
 
 export const trustNpmPublishers = Command.make("trust-npm-publishers").pipe(
   Command.withHandler(
@@ -44,11 +49,25 @@ export const trustNpmPublishers = Command.make("trust-npm-publishers").pipe(
             (process) => spawner.exitCode(process),
             Effect.filterOrFail(
               (exitCode) => exitCode === 0,
-              () => new Error(`Failed to configure trusted publishing for ${name}`)
-            ),
-            Effect.orDie
+              (exitCode) => new TrustedPublisherSetupError({ packageName: name, exitCode })
+            )
           )
         })
+      ).pipe(
+        Effect.catchTag("TrustedPublisherSetupError", (error) =>
+          Effect.gen(function* () {
+            yield* Console.error(`npm did not configure trusted publishing for ${error.packageName}.`)
+            yield* Console.error(
+              "If you use a security key or passkey for npm two-factor authentication, finish this one-time setup in npm's web UI instead:"
+            )
+            yield* Console.error(`  https://www.npmjs.com/package/${error.packageName}`)
+            yield* Console.error("  Settings > Trusted publisher > GitHub Actions")
+            yield* Console.error(`  Owner: saiashirwad | Repository: texoport | Workflow: ${workflow} | Allow npm publish`)
+            yield* Effect.sync(() => {
+              process.exitCode = 1
+            })
+          })
+        )
       )
     })
   )

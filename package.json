@@ -17,7 +17,7 @@
     "version-packages": "changeset version",
     "release": "pnpm build && changeset publish",
     "command": "node --experimental-strip-types main.ts",
-    "setup:npm-publishers": "pnpm command trust-npm-publishers"
+    "setup:npm-publishers": "node --experimental-strip-types main.ts trust-npm-publishers"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
