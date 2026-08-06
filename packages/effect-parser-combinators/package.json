@@ -1,6 +1,6 @@
 {
   "name": "@texoport/effect-parser-combinators",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Parse-only Effect combinators for text input.",
   "license": "MIT",
   "type": "module",
