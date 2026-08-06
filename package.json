@@ -39,6 +39,7 @@
     "test": "node --test --experimental-strip-types test/prompt.test.ts test/response.test.ts test/envelopes.test.ts",
     "example:claude": "node --experimental-strip-types examples/claude.ts",
     "example:codex": "node --experimental-strip-types examples/codex.ts",
+    "example:codex-tools": "node --experimental-strip-types examples/codex-tools.ts",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
   "peerDependencies": {

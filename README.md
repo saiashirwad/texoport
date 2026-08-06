@@ -69,19 +69,50 @@ CodexLanguageModel.layer({ sandbox: "read-only", model: "..." });
 
 Claude always runs with `--tools ""` (pure completion, not the coding agent).
 
+### Effect toolkits (Codex)
+
+Codex supports Effect `Toolkit`s via **`codex app-server`** dynamic tools (same subscription as the CLI — no API key):
+
+```ts
+import { LanguageModel, Tool, Toolkit } from "@effect/ai"
+import { Effect, Schema } from "effect"
+import { CodexLanguageModel } from "effect-ai-subs"
+
+const GetWeather = Tool.make("get_weather", {
+  description: "Weather for a city",
+  parameters: { city: Schema.String },
+  success: Schema.Struct({ tempC: Schema.Number })
+})
+
+const WeatherToolkit = Toolkit.make(GetWeather)
+const WeatherLive = WeatherToolkit.toLayer({
+  get_weather: ({ city }) => Effect.succeed({ tempC: 18 })
+})
+
+LanguageModel.generateText({
+  prompt: "Weather in Paris? Use get_weather.",
+  toolkit: WeatherToolkit
+}).pipe(
+  Effect.provide(CodexLanguageModel.model()),
+  Effect.provide(WeatherLive)
+)
+```
+
+Claude has no toolkit path yet (no dynamic-tool protocol on `claude -p`).
+
 ### Scope
 
-| Feature             | Status                           |
-| ------------------- | -------------------------------- |
-| `generateText`      | yes                              |
-| `generateObject`    | yes                              |
-| `streamText`        | pseudo-stream of the full result |
-| Effect toolkits     | no — use official API providers  |
-| Embeddings / images | no                               |
+| Feature | Status |
+| --- | --- |
+| `generateText` | yes |
+| `generateObject` | yes |
+| `streamText` | pseudo-stream of the full result |
+| Effect toolkits | **Codex yes** (app-server); Claude no |
+| Embeddings / images | no |
 
 ## Notes
 
-Personal use of _your_ subscription via the official CLIs. Provider ToS and billing for headless / Agent SDK usage can change; this adapter does not bypass that.
+Personal use of *your* subscription via the official CLIs. Provider ToS and billing for headless / Agent SDK usage can change; this adapter does not bypass that.
 
 ## Dev
 
@@ -89,6 +120,7 @@ Personal use of _your_ subscription via the official CLIs. Provider ToS and bill
 pnpm typecheck && pnpm test
 pnpm example:claude
 pnpm example:codex
+pnpm example:codex-tools
 ```
 
 ## License

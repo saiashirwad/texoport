@@ -1,15 +1,24 @@
 /**
- * `@effect/ai` LanguageModel over `codex exec` (ChatGPT Plus/Pro Codex subscription).
+ * `@effect/ai` LanguageModel over Codex subscription:
+ * - plain text/object: `codex exec`
+ * - Effect toolkits: `codex app-server` dynamic tools (experimentalApi)
  */
 import * as AiError from "@effect/ai/AiError"
 import * as LanguageModel from "@effect/ai/LanguageModel"
 import * as AiModel from "@effect/ai/Model"
+import * as Prompt from "@effect/ai/Prompt"
+import * as Response from "@effect/ai/Response"
+import type * as Tool from "@effect/ai/Tool"
+import type * as Toolkit from "@effect/ai/Toolkit"
 import { CommandExecutor, FileSystem, Path } from "@effect/platform"
 import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import * as Predicate from "effect/Predicate"
+import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
+import { runTurnWithTools } from "./internal/codexAppServer.ts"
 import { parseCodexCapture } from "./internal/codexEnvelope.ts"
 import { flattenPrompt } from "./internal/prompt.ts"
 import { toParts, toStreamParts, type Completion } from "./internal/response.ts"
@@ -38,6 +47,7 @@ export declare namespace Config {
 }
 
 type Requires = CommandExecutor.CommandExecutor | FileSystem.FileSystem | Path.Path
+type AnyToolkit = Toolkit.WithHandler<Record<string, Tool.Any>>
 
 export const model = (
   modelId?: string,
@@ -60,15 +70,154 @@ export const make = (
     const executor = yield* CommandExecutor.CommandExecutor
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const run = (options: LanguageModel.ProviderOptions) =>
-      complete(options, defaults, { executor, fs, path })
-    return yield* LanguageModel.make({
-      generateText: (options) => run(options).pipe(Effect.map(toParts)),
-      streamText: (options) => Stream.unwrap(run(options).pipe(Effect.map(toStreamParts)))
+    const services = { executor, fs, path }
+
+    const base = yield* LanguageModel.make({
+      generateText: (options) =>
+        completeExec(options, defaults, services).pipe(Effect.map(toParts)),
+      streamText: (options) =>
+        Stream.unwrap(
+          completeExec(options, defaults, services).pipe(Effect.map(toStreamParts))
+        )
     })
+
+    const resolveToolkit = (
+      toolkit: AnyToolkit | Effect.Effect<AnyToolkit, any, any> | undefined
+    ): Effect.Effect<AnyToolkit | undefined, any, any> => {
+      if (Predicate.isUndefined(toolkit)) return Effect.succeed(undefined)
+      return Effect.isEffect(toolkit) ? toolkit : Effect.succeed(toolkit)
+    }
+
+    const toolsEnabled = (toolkit: AnyToolkit | undefined) =>
+      toolkit !== undefined && Object.values(toolkit.tools).length > 0
+
+    const withTools = (
+      options: {
+        readonly prompt: Prompt.RawInput
+        readonly toolkit?: AnyToolkit | Effect.Effect<AnyToolkit, any, any>
+      },
+      responseFormat: LanguageModel.ProviderOptions["responseFormat"]
+    ) =>
+      Effect.gen(function*() {
+        const toolkit = (yield* resolveToolkit(options.toolkit))!
+        const config = yield* mergedConfig(defaults)
+        const timeout = Duration.decode(config.timeout ?? "3 minutes")
+        return yield* runTurnWithTools({
+          prompt: Prompt.make(options.prompt),
+          tools: Object.values(toolkit.tools),
+          toolkit,
+          responseFormat,
+          config: {
+            bin: config.bin ?? "codex",
+            model: config.model,
+            cwd: config.cwd,
+            sandbox: config.sandbox ?? "read-only",
+            timeoutMs: Duration.toMillis(timeout)
+          }
+        }).pipe(Effect.provideService(CommandExecutor.CommandExecutor, executor))
+      })
+
+    const assembleParts = (
+      completion: Completion,
+      toolParts: ReadonlyArray<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded>
+    ): Array<Response.AnyPart> => {
+      const parts: Array<Response.AnyPart> = []
+      for (const p of toolParts) {
+        if (p.type === "tool-call") {
+          parts.push(Response.makePart("tool-call", {
+            id: p.id,
+            name: p.name,
+            params: p.params as never,
+            providerExecuted: false
+          }))
+        } else {
+          parts.push(Response.toolResultPart({
+            id: p.id,
+            name: p.name,
+            isFailure: p.isFailure,
+            result: p.result as never,
+            encodedResult: p.result,
+            providerExecuted: false
+          }) as Response.AnyPart)
+        }
+      }
+      if (completion.text.length > 0) {
+        parts.push(Response.makePart("text", { text: completion.text }))
+      }
+      const inputTokens = completion.usage?.inputTokens
+      const outputTokens = completion.usage?.outputTokens
+      parts.push(Response.makePart("finish", {
+        reason: completion.finishReason ?? "stop",
+        usage: {
+          inputTokens,
+          outputTokens,
+          totalTokens: completion.usage?.totalTokens ??
+            (inputTokens !== undefined || outputTokens !== undefined
+              ? (inputTokens ?? 0) + (outputTokens ?? 0)
+              : undefined),
+          reasoningTokens: completion.usage?.reasoningTokens,
+          cachedInputTokens: completion.usage?.cachedInputTokens
+        }
+      }))
+      return parts
+    }
+
+    return {
+      generateText: (options) =>
+        Effect.gen(function*() {
+          const toolkit = yield* resolveToolkit(options.toolkit as never)
+          if (!toolsEnabled(toolkit)) return yield* base.generateText(options)
+
+          const { completion, toolParts } = yield* withTools(options as never, { type: "text" })
+          return new LanguageModel.GenerateTextResponse(assembleParts(completion, toolParts) as never)
+        }),
+
+      generateObject: (options) =>
+        Effect.gen(function*() {
+          const toolkit = yield* resolveToolkit(options.toolkit as never)
+          if (!toolsEnabled(toolkit)) return yield* base.generateObject(options)
+
+          const { completion, toolParts } = yield* withTools(options as never, {
+            type: "json",
+            objectName: options.objectName ?? "object",
+            schema: options.schema
+          })
+          const parts = assembleParts(completion, toolParts)
+          const value = yield* Schema.decode(Schema.parseJson(options.schema))(completion.text).pipe(
+            Effect.mapError((cause) =>
+              new AiError.MalformedOutput({
+                module: "CodexLanguageModel",
+                method: "generateObject",
+                description: "Generated object failed schema validation",
+                cause
+              })
+            )
+          )
+          return new LanguageModel.GenerateObjectResponse(value, parts as never)
+        }),
+
+      streamText: (options) =>
+        Stream.unwrap(
+          Effect.gen(function*() {
+            const toolkit = yield* resolveToolkit(options.toolkit as never)
+            if (!toolsEnabled(toolkit)) return base.streamText(options)
+
+            const { completion } = yield* withTools(options as never, { type: "text" })
+            // Pseudo-stream: full turn (incl. tools) then emit stream parts.
+            return toStreamParts(completion) as Stream.Stream<Response.StreamPart<any>>
+          })
+        )
+    } as LanguageModel.Service
   })
 
-const complete = (
+const mergedConfig = (defaults: Config.Service) =>
+  Effect.map(Config.getOrUndefined, (override) => ({ ...defaults, ...override }))
+
+// =============================================================================
+// Plain `codex exec` path (no Effect toolkit)
+// =============================================================================
+
+const completeExec = (
   options: LanguageModel.ProviderOptions,
   defaults: Config.Service,
   services: {
@@ -78,26 +227,30 @@ const complete = (
   }
 ): Effect.Effect<Completion, AiError.AiError> =>
   Effect.gen(function*() {
+    // When a toolkit is used, the Service wrapper takes the app-server path.
+    // LanguageModel.make only reaches here for non-toolkit calls (tools: []).
     if (options.tools.length > 0) {
       return yield* new AiError.MalformedInput({
         module: "CodexLanguageModel",
         method: "generateText",
         description:
-          "Effect toolkits are not supported over the Codex CLI. Use text/object generation, or @effect/ai-openai with an API key."
+          "Use LanguageModel.generateText({ toolkit }) for tools. The bare provider tool list is not supported on the exec path."
       })
     }
 
-    const config = { ...defaults, ...(yield* Config.getOrUndefined) }
+    const config = yield* mergedConfig(defaults)
     const { system, user } = flattenPrompt(options.prompt)
     const promptText = system !== undefined ? `${system}\n\n${user}` : user
     const timeout = Duration.decode(config.timeout ?? "3 minutes")
+    const sandbox = config.sandbox ?? "read-only"
+
     const args = [
       "exec",
       "--json",
       "--ephemeral",
       "--skip-git-repo-check",
       "--sandbox",
-      config.sandbox ?? "read-only",
+      sandbox,
       "--color",
       "never"
     ]
@@ -161,8 +314,12 @@ const complete = (
                 })
               )
             )
-            const withSchema = [...args.slice(0, -1), "--output-schema", schemaPath, promptText]
-            return yield* runSpawn(withSchema)
+            return yield* runSpawn([
+              ...args.slice(0, -1),
+              "--output-schema",
+              schemaPath,
+              promptText
+            ])
           }),
         (dir) => services.fs.remove(dir, { recursive: true }).pipe(Effect.orDie)
       )
