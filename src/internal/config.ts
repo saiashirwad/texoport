@@ -1,6 +1,11 @@
 import * as Duration from "effect/Duration"
 
-export const DEFAULT_TIMEOUT = "3 minutes" as const
+/**
+ * Must exceed the CLIs' own failure budget: `claude` retries a dead API
+ * connection for ~180s before exiting 1 with a JSON error envelope. A shorter
+ * timeout masks that envelope with a generic "timed out" error.
+ */
+export const DEFAULT_TIMEOUT = "5 minutes" as const
 
 export interface BaseConfig {
   readonly model?: string | undefined

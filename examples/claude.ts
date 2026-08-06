@@ -13,6 +13,6 @@ const program = Effect.gen(function*() {
     schema: Person
   })
   console.log("object:", person.value)
-}).pipe(Effect.provide(ClaudeLanguageModel.model()))
+}).pipe(Effect.provide(ClaudeLanguageModel.model("haiku")))
 
 NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)))
