@@ -1,6 +1,6 @@
 {
   "name": "@texoport/effect-ai-codex",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Effect AI LanguageModel provider for your ChatGPT Codex subscription.",
   "license": "MIT",
   "type": "module",
