@@ -3,13 +3,15 @@
  * Tool list + gateway URL come from env; tools/call is proxied to the parent process.
  *
  * Env:
- *   EFFECT_AI_SUBS_TOOLS_JSON  - JSON array of { name, description, inputSchema }
- *   EFFECT_AI_SUBS_GATEWAY     - http://127.0.0.1:<port>
+ *   EFFECT_AI_SUBS_TOOLS_JSON       - JSON array of { name, description, inputSchema }
+ *   EFFECT_AI_SUBS_GATEWAY          - http://127.0.0.1:<port>
+ *   EFFECT_AI_SUBS_GATEWAY_TOKEN    - per-turn auth token for the gateway
  */
 import { createInterface } from "node:readline"
 
 const tools = JSON.parse(process.env.EFFECT_AI_SUBS_TOOLS_JSON ?? "[]")
 const gateway = process.env.EFFECT_AI_SUBS_GATEWAY ?? ""
+const token = process.env.EFFECT_AI_SUBS_GATEWAY_TOKEN ?? ""
 
 const write = (msg) => {
   process.stdout.write(`${JSON.stringify(msg)}\n`)
@@ -18,7 +20,7 @@ const write = (msg) => {
 const callGateway = async (name, args) => {
   const res = await fetch(`${gateway}/call`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-effect-ai-subs-token": token },
     body: JSON.stringify({ name, arguments: args ?? {} })
   })
   if (!res.ok) {
@@ -66,7 +68,7 @@ rl.on("line", async (line) => {
     const args = params?.arguments ?? {}
     try {
       const out = await callGateway(name, args)
-      const text = typeof out.result === "string" ? out.result : JSON.stringify(out.result)
+      const text = typeof out.result === "string" ? out.result : JSON.stringify(out.result) ?? ""
       write({
         jsonrpc: "2.0",
         id,

@@ -28,4 +28,4 @@ export const hoistRootRef = (root: unknown): unknown => {
 }
 
 export const schemaAstToJsonSchemaArg = (ast: SchemaAST): string =>
-  JSON.stringify(hoistRootRef(Tool.getJsonSchemaFromSchemaAst(ast as never)))
+  JSON.stringify(hoistRootRef(Tool.getJsonSchemaFromSchemaAst(ast)))

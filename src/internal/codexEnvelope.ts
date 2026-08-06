@@ -7,35 +7,35 @@ import type { SpawnCapture } from "./spawn.ts"
 
 const Number_ = Schema.Number.pipe(Schema.finite())
 
-export class CodexUsage extends Schema.Class<CodexUsage>("CodexUsage")({
+class CodexUsage extends Schema.Class<CodexUsage>("CodexUsage")({
   input_tokens: Schema.optional(Number_),
   output_tokens: Schema.optional(Number_),
   cached_input_tokens: Schema.optional(Number_),
   reasoning_output_tokens: Schema.optional(Number_)
 }) {}
 
-export class CodexThreadStarted extends Schema.Class<CodexThreadStarted>("CodexThreadStarted")({
+class CodexThreadStarted extends Schema.Class<CodexThreadStarted>("CodexThreadStarted")({
   type: Schema.Literal("thread.started"),
   thread_id: Schema.optional(Schema.String)
 }) {}
 
-export class CodexAgentMessage extends Schema.Class<CodexAgentMessage>("CodexAgentMessage")({
+class CodexAgentMessage extends Schema.Class<CodexAgentMessage>("CodexAgentMessage")({
   type: Schema.Literal("agent_message"),
   text: Schema.String,
   id: Schema.optional(Schema.String)
 }) {}
 
-export class CodexItemCompleted extends Schema.Class<CodexItemCompleted>("CodexItemCompleted")({
+class CodexItemCompleted extends Schema.Class<CodexItemCompleted>("CodexItemCompleted")({
   type: Schema.Literal("item.completed"),
   item: Schema.Unknown
 }) {}
 
-export class CodexTurnCompleted extends Schema.Class<CodexTurnCompleted>("CodexTurnCompleted")({
+class CodexTurnCompleted extends Schema.Class<CodexTurnCompleted>("CodexTurnCompleted")({
   type: Schema.Literal("turn.completed"),
   usage: Schema.optional(CodexUsage)
 }) {}
 
-export class CodexErrorEvent extends Schema.Class<CodexErrorEvent>("CodexErrorEvent")({
+class CodexErrorEvent extends Schema.Class<CodexErrorEvent>("CodexErrorEvent")({
   type: Schema.Literal("error"),
   message: Schema.optional(Schema.String)
 }) {}
@@ -62,17 +62,10 @@ const usageOf = (u: CodexUsage): Usage => ({
 })
 
 export const parseCodexCapture = (
-  capture: SpawnCapture
+  capture: SpawnCapture,
+  method = "generateText"
 ): Effect.Effect<Completion, AiError.AiError> =>
   Effect.gen(function*() {
-    if (capture.exitCode !== 0 && capture.stdout.trim().length === 0) {
-      return yield* new AiError.UnknownError({
-        module: "CodexLanguageModel",
-        method: "generateText",
-        description: `codex exited ${capture.exitCode}: ${capture.stderr.trim() || "(no stderr)"}`
-      })
-    }
-
     let text = ""
     let id: string | undefined
     let usage: Usage | undefined
@@ -103,18 +96,19 @@ export const parseCodexCapture = (
       }
     }
 
-    if (error !== undefined && text.length === 0) {
+    // An error event fails the turn even if partial text was emitted first.
+    if (error !== undefined) {
       return yield* new AiError.UnknownError({
         module: "CodexLanguageModel",
-        method: "generateText",
+        method,
         description: error
       })
     }
 
-    if (text.length === 0 && capture.exitCode !== 0) {
+    if (capture.exitCode !== 0) {
       return yield* new AiError.UnknownError({
         module: "CodexLanguageModel",
-        method: "generateText",
+        method,
         description: `codex exited ${capture.exitCode}: ${
           capture.stderr.trim() || capture.stdout.trim() || "(empty)"
         }`

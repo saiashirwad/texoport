@@ -7,7 +7,7 @@ import type { SpawnCapture } from "./spawn.ts"
 
 const Number_ = Schema.Number.pipe(Schema.finite())
 
-export class ClaudeUsage extends Schema.Class<ClaudeUsage>("ClaudeUsage")({
+class ClaudeUsage extends Schema.Class<ClaudeUsage>("ClaudeUsage")({
   input_tokens: Schema.optional(Number_),
   output_tokens: Schema.optional(Number_),
   cache_read_input_tokens: Schema.optional(Number_)
@@ -39,7 +39,8 @@ const finishReason = (reason: string | undefined): Response.FinishReason => {
 }
 
 export const parseClaudeCapture = (
-  capture: SpawnCapture
+  capture: SpawnCapture,
+  method = "generateText"
 ): Effect.Effect<Completion, AiError.AiError> =>
   Effect.gen(function*() {
     const envelope = yield* decodeEnvelope(capture.stdout).pipe(
@@ -47,7 +48,7 @@ export const parseClaudeCapture = (
         capture.exitCode !== 0
           ? new AiError.UnknownError({
             module: "ClaudeLanguageModel",
-            method: "generateText",
+            method,
             description: `claude exited ${capture.exitCode}: ${
               capture.stderr.trim() || capture.stdout.trim() || "(empty)"
             }`,
@@ -55,17 +56,28 @@ export const parseClaudeCapture = (
           })
           : new AiError.MalformedOutput({
             module: "ClaudeLanguageModel",
-            method: "generateText",
+            method,
             description: "invalid claude JSON envelope",
             cause
           })
       )
     )
 
+    // A non-zero exit is a failure even when the JSON envelope parses cleanly.
+    if (capture.exitCode !== 0) {
+      return yield* new AiError.UnknownError({
+        module: "ClaudeLanguageModel",
+        method,
+        description: `claude exited ${capture.exitCode}: ${
+          capture.stderr.trim() || envelope.result || "(empty)"
+        }`
+      })
+    }
+
     if (envelope.is_error) {
       return yield* new AiError.UnknownError({
         module: "ClaudeLanguageModel",
-        method: "generateText",
+        method,
         description: envelope.result ?? "claude reported an error"
       })
     }
@@ -82,7 +94,7 @@ export const parseClaudeCapture = (
           outputTokens: envelope.usage.output_tokens,
           cachedInputTokens: envelope.usage.cache_read_input_tokens
         },
-      providerKey: "claude-code",
+      providerKey: "claude",
       raw: envelope
     }
   })

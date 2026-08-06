@@ -10,12 +10,10 @@ import type * as LanguageModel from "@effect/ai/LanguageModel"
 import type * as Prompt from "@effect/ai/Prompt"
 import type * as Response from "@effect/ai/Response"
 import * as Tool from "@effect/ai/Tool"
-import type * as Toolkit from "@effect/ai/Toolkit"
 import { Command, type CommandExecutor } from "@effect/platform"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as Either from "effect/Either"
-import * as Fiber from "effect/Fiber"
 import * as HashMap from "effect/HashMap"
 import * as Option from "effect/Option"
 import * as Queue from "effect/Queue"
@@ -23,13 +21,41 @@ import * as Ref from "effect/Ref"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import { flattenPrompt } from "./prompt.ts"
-import type { Completion, Usage } from "./response.ts"
+import type { Completion, ToolParts, Usage } from "./response.ts"
+import { type AnyToolkit, callTool, type ToolMethod, toolMetadata } from "./toolkit.ts"
 
-const JsonLine = Schema.parseJson(Schema.Unknown)
-const decodeLine = Schema.decodeUnknownEither(JsonLine)
+const decodeLine = Schema.decodeUnknownEither(Schema.parseJson(Schema.Unknown))
 const asRecord = Schema.decodeUnknownEither(
   Schema.Record({ key: Schema.String, value: Schema.Unknown })
 )
+
+const AgentMessageItem = Schema.Struct({
+  type: Schema.Literal("agentMessage"),
+  text: Schema.String
+})
+const decodeAgentMessageItem = Schema.decodeUnknownEither(AgentMessageItem)
+
+const TokenUsageParams = Schema.Struct({
+  tokenUsage: Schema.optional(Schema.Struct({
+    last: Schema.optional(Schema.NullOr(Schema.Struct({
+      inputTokens: Schema.optional(Schema.Number),
+      outputTokens: Schema.optional(Schema.Number),
+      totalTokens: Schema.optional(Schema.Number),
+      reasoningOutputTokens: Schema.optional(Schema.Number),
+      cachedInputTokens: Schema.optional(Schema.Number)
+    })))
+  }))
+})
+const decodeTokenUsageParams = Schema.decodeUnknownEither(TokenUsageParams)
+
+const TurnCompletedParams = Schema.Struct({
+  turn: Schema.optional(Schema.Struct({
+    status: Schema.String,
+    error: Schema.optional(Schema.Unknown),
+    items: Schema.optional(Schema.Array(Schema.Unknown))
+  }))
+})
+const decodeTurnCompletedParams = Schema.decodeUnknownEither(TurnCompletedParams)
 
 export interface AppServerConfig {
   readonly bin: string
@@ -42,31 +68,14 @@ export interface AppServerConfig {
 export interface ToolRunInput {
   readonly prompt: Prompt.Prompt
   readonly tools: ReadonlyArray<Tool.Any>
-  readonly toolkit: Toolkit.WithHandler<Record<string, Tool.Any>>
+  readonly toolkit: AnyToolkit
   readonly responseFormat: LanguageModel.ProviderOptions["responseFormat"]
+  readonly method: ToolMethod
   readonly config: AppServerConfig
 }
 
-const textOf = (prompt: Prompt.Prompt): { system?: string; user: string } => {
-  const flat = flattenPrompt(prompt)
-  return flat.system !== undefined
-    ? { system: flat.system, user: flat.user }
-    : { user: flat.user }
-}
-
 const toDynamicTools = (tools: ReadonlyArray<Tool.Any>) =>
-  tools.map((tool) => {
-    // Tool.Any is a wide union; cast for metadata helpers.
-    const t = tool as Tool.Any & { readonly name: string }
-    return {
-      type: "function" as const,
-      name: t.name,
-      description: Tool.getDescription(t as never) ?? `Tool ${t.name}`,
-      inputSchema: Tool.getJsonSchema(t as never) as unknown
-    }
-  })
-
-const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s)
+  tools.map((tool) => ({ type: "function" as const, ...toolMetadata(tool) }))
 
 /**
  * Run one user turn on app-server, executing Effect tools when requested.
@@ -76,7 +85,7 @@ export const runTurnWithTools = (
 ): Effect.Effect<
   {
     readonly completion: Completion
-    readonly toolParts: Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded>
+    readonly toolParts: ToolParts
   },
   AiError.AiError,
   CommandExecutor.CommandExecutor
@@ -88,7 +97,7 @@ export const runTurnWithTools = (
       Effect.mapError((cause) =>
         new AiError.UnknownError({
           module: "CodexLanguageModel",
-          method: "generateText",
+          method: input.method,
           description: "failed to spawn codex app-server",
           cause
         })
@@ -99,15 +108,16 @@ export const runTurnWithTools = (
     type Pending = Deferred.Deferred<unknown, AiError.AiError>
     const pending = yield* Ref.make(HashMap.empty<string | number, Pending>())
     const inbound = yield* Queue.unbounded<unknown>()
+    const turnDone = yield* Deferred.make<void, AiError.AiError>()
 
     // Keep stdin open for the whole session: a fiber drains outbound into process.stdin.
     const outbound = yield* Queue.unbounded<Uint8Array>()
-    const writer = yield* Stream.fromQueue(outbound).pipe(
+    yield* Stream.fromQueue(outbound).pipe(
       Stream.run(process.stdin),
       Effect.forkScoped
     )
 
-    const reader = yield* Stream.runForEach(
+    yield* Stream.runForEach(
       process.stdout.pipe(Stream.decodeText(), Stream.splitLines),
       (line) => {
         if (line.trim().length === 0) return Effect.void
@@ -115,10 +125,20 @@ export const runTurnWithTools = (
         if (Either.isLeft(decoded)) return Effect.void
         return Queue.offer(inbound, decoded.right)
       }
-    ).pipe(Effect.forkScoped)
+    ).pipe(
+      // If the app-server exits (or the stream fails) the turn can never
+      // complete; unblock the Deferred.await below instead of hanging until
+      // the turn timeout.
+      Effect.ensuring(Deferred.fail(turnDone, new AiError.UnknownError({
+        module: "CodexLanguageModel",
+        method: input.method,
+        description: "codex app-server exited before completing the turn"
+      }))),
+      Effect.forkScoped
+    )
 
     const write = (payload: unknown) =>
-      Queue.offer(outbound, encodeUtf8(`${JSON.stringify(payload)}\n`))
+      Queue.offer(outbound, new TextEncoder().encode(`${JSON.stringify(payload)}\n`))
 
     const request = (method: string, params: unknown): Effect.Effect<unknown, AiError.AiError> =>
       Effect.gen(function*() {
@@ -132,10 +152,11 @@ export const runTurnWithTools = (
             onTimeout: () =>
               new AiError.UnknownError({
                 module: "CodexLanguageModel",
-                method: "generateText",
+                method: input.method,
                 description: `codex app-server request timed out: ${method}`
               })
-          })
+          }),
+          Effect.ensuring(Ref.update(pending, (m) => HashMap.remove(m, id)))
         )
       })
 
@@ -144,7 +165,6 @@ export const runTurnWithTools = (
     const toolParts: Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded> = []
     let text = ""
     let usage: Usage | undefined
-    const turnDone = yield* Deferred.make<void, AiError.AiError>()
 
     const handleServerRequest = (msg: Record<string, unknown>) =>
       Effect.gen(function*() {
@@ -165,31 +185,24 @@ export const runTurnWithTools = (
             providerExecuted: false
           })
 
-          const outcome = yield* input.toolkit.handle(toolName, args as never).pipe(
-            Effect.map((r) => ({ _tag: "ok" as const, r })),
-            Effect.catchAll((error) =>
-              Effect.succeed({
-                _tag: "err" as const,
-                message: String(error)
-              })
-            )
-          )
+          const outcome = yield* callTool(input.toolkit, toolName, args)
 
           if (outcome._tag === "ok") {
-            const encoded = outcome.r.encodedResult
             toolParts.push({
               type: "tool-result",
               id: callId,
               name: toolName,
-              result: encoded,
-              isFailure: outcome.r.isFailure,
+              result: outcome.encoded,
+              isFailure: outcome.isFailure,
               providerExecuted: false
             })
             yield* reply(id, {
-              success: !outcome.r.isFailure,
+              success: !outcome.isFailure,
               contentItems: [{
                 type: "inputText",
-                text: typeof encoded === "string" ? encoded : JSON.stringify(encoded)
+                text: typeof outcome.encoded === "string"
+                  ? outcome.encoded
+                  : JSON.stringify(outcome.encoded) ?? ""
               }]
             })
           } else {
@@ -209,23 +222,13 @@ export const runTurnWithTools = (
           return
         }
 
-        if (
-          method === "item/commandExecution/requestApproval" ||
-          method === "item/fileChange/requestApproval" ||
-          method === "item/permissions/requestApproval"
-        ) {
-          yield* reply(id, { decision: "accept" })
-          return
-        }
-        if (method === "execCommandApproval" || method === "applyPatchApproval") {
-          yield* reply(id, { decision: "approved" })
-          return
-        }
-
-        yield* reply(id, { decision: "decline" }).pipe(Effect.ignore)
+        // Approval requests (commandExecution / fileChange / permissions /
+        // execCommandApproval / applyPatchApproval / …) are always declined:
+        // sandbox and approvalPolicy "never" are set at thread/start.
+        yield* reply(id, { decision: "decline" })
       })
 
-    const dispatcher = yield* Effect.forever(
+    yield* Effect.forever(
       Effect.gen(function*() {
         const raw = yield* Queue.take(inbound)
         const rec = asRecord(raw)
@@ -243,7 +246,7 @@ export const runTurnWithTools = (
                 def.value,
                 new AiError.UnknownError({
                   module: "CodexLanguageModel",
-                  method: "generateText",
+                  method: input.method,
                   description: `codex app-server error: ${JSON.stringify(msg["error"])}`
                 })
               )
@@ -264,53 +267,40 @@ export const runTurnWithTools = (
           const params = (msg["params"] ?? {}) as Record<string, unknown>
 
           if (method === "item/completed") {
-            const item = params["item"] as Record<string, unknown> | undefined
-            if (item?.["type"] === "agentMessage" && typeof item["text"] === "string") {
-              text = item["text"]
-            }
+            const item = decodeAgentMessageItem(params["item"])
+            if (Either.isRight(item)) text = item.right.text
           }
 
           if (method === "thread/tokenUsage/updated") {
-            const tokenUsage = params["tokenUsage"] as Record<string, unknown> | undefined
-            const last = tokenUsage?.["last"] as Record<string, unknown> | undefined
-            if (last !== undefined) {
+            const parsed = decodeTokenUsageParams(params)
+            const last = Either.isRight(parsed) ? parsed.right.tokenUsage?.last : undefined
+            if (last != null) {
               usage = {
-                inputTokens: typeof last["inputTokens"] === "number" ? last["inputTokens"] : undefined,
-                outputTokens: typeof last["outputTokens"] === "number" ? last["outputTokens"] : undefined,
-                totalTokens: typeof last["totalTokens"] === "number" ? last["totalTokens"] : undefined,
-                reasoningTokens: typeof last["reasoningOutputTokens"] === "number"
-                  ? last["reasoningOutputTokens"]
-                  : undefined,
-                cachedInputTokens: typeof last["cachedInputTokens"] === "number"
-                  ? last["cachedInputTokens"]
-                  : undefined
+                inputTokens: last.inputTokens,
+                outputTokens: last.outputTokens,
+                totalTokens: last.totalTokens,
+                reasoningTokens: last.reasoningOutputTokens,
+                cachedInputTokens: last.cachedInputTokens
               }
             }
           }
 
           if (method === "turn/completed") {
-            const turn = params["turn"] as Record<string, unknown> | undefined
-            if (turn?.["status"] === "failed") {
+            const parsed = decodeTurnCompletedParams(params)
+            const turn = Either.isRight(parsed) ? parsed.right.turn : undefined
+            if (turn?.status === "failed") {
               yield* Deferred.fail(
                 turnDone,
                 new AiError.UnknownError({
                   module: "CodexLanguageModel",
-                  method: "generateText",
-                  description: `codex turn failed: ${JSON.stringify(turn["error"])}`
+                  method: input.method,
+                  description: `codex turn failed: ${JSON.stringify(turn.error)}`
                 })
               )
             } else {
-              const items = turn?.["items"]
-              if (Array.isArray(items)) {
-                for (const it of items) {
-                  if (
-                    typeof it === "object" && it !== null &&
-                    (it as Record<string, unknown>)["type"] === "agentMessage" &&
-                    typeof (it as Record<string, unknown>)["text"] === "string"
-                  ) {
-                    text = (it as Record<string, unknown>)["text"] as string
-                  }
-                }
+              for (const it of turn?.items ?? []) {
+                const item = decodeAgentMessageItem(it)
+                if (Either.isRight(item)) text = item.right.text
               }
               yield* Deferred.succeed(turnDone, undefined)
             }
@@ -321,7 +311,7 @@ export const runTurnWithTools = (
               turnDone,
               new AiError.UnknownError({
                 module: "CodexLanguageModel",
-                method: "generateText",
+                method: input.method,
                 description: `codex app-server error notification: ${JSON.stringify(params)}`
               })
             )
@@ -336,7 +326,7 @@ export const runTurnWithTools = (
     })
     yield* write({ method: "initialized" })
 
-    const { system, user } = textOf(input.prompt)
+    const { system, user } = flattenPrompt(input.prompt)
     const threadResult = yield* request("thread/start", {
       ephemeral: true,
       approvalPolicy: "never",
@@ -351,7 +341,7 @@ export const runTurnWithTools = (
     if (Either.isLeft(threadRec)) {
       return yield* new AiError.MalformedOutput({
         module: "CodexLanguageModel",
-        method: "generateText",
+        method: input.method,
         description: "invalid thread/start response"
       })
     }
@@ -359,7 +349,7 @@ export const runTurnWithTools = (
     if (Either.isLeft(threadObj) || typeof threadObj.right["id"] !== "string") {
       return yield* new AiError.MalformedOutput({
         module: "CodexLanguageModel",
-        method: "generateText",
+        method: input.method,
         description: "thread/start missing thread.id"
       })
     }
@@ -370,9 +360,7 @@ export const runTurnWithTools = (
       input: [{ type: "text", text: user, text_elements: [] }]
     }
     if (input.responseFormat.type === "json") {
-      turnParams["outputSchema"] = Tool.getJsonSchemaFromSchemaAst(
-        input.responseFormat.schema.ast as never
-      )
+      turnParams["outputSchema"] = Tool.getJsonSchemaFromSchemaAst(input.responseFormat.schema.ast)
     }
 
     yield* request("turn/start", turnParams)
@@ -383,16 +371,11 @@ export const runTurnWithTools = (
         onTimeout: () =>
           new AiError.UnknownError({
             module: "CodexLanguageModel",
-            method: "generateText",
+            method: input.method,
             description: `codex turn timed out after ${input.config.timeoutMs}ms`
           })
       })
     )
-
-    yield* Fiber.interrupt(reader).pipe(Effect.ignore)
-    yield* Fiber.interrupt(writer).pipe(Effect.ignore)
-    yield* Fiber.interrupt(dispatcher).pipe(Effect.ignore)
-    yield* process.kill().pipe(Effect.ignore)
 
     return {
       completion: {

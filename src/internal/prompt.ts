@@ -6,7 +6,7 @@ export interface FlattenedPrompt {
 }
 
 const textParts = (parts: ReadonlyArray<{ readonly type: string; readonly text?: string }>) =>
-  parts.filter((p) => p.type === "text" && typeof p.text === "string").map((p) => p.text!).join("")
+  parts.filter((p) => p.type === "text" && typeof p.text === "string").map((p) => p.text).join("")
 
 /** Collapse an Effect AI prompt into system + user text for one-shot CLI print mode. */
 export const flattenPrompt = (prompt: Prompt.Prompt): FlattenedPrompt => {
@@ -27,10 +27,10 @@ export const flattenPrompt = (prompt: Prompt.Prompt): FlattenedPrompt => {
       case "tool":
         for (const part of message.content) {
           if (part.type !== "tool-result") continue
-          const name = "name" in part && typeof part.name === "string" ? ` (${part.name})` : ""
-          const result = "result" in part ? part.result : undefined
           turns.push(
-            `Tool result${name}: ${typeof result === "string" ? result : JSON.stringify(result)}`
+            `Tool result (${part.name}): ${
+              typeof part.result === "string" ? part.result : JSON.stringify(part.result)
+            }`
           )
         }
         break

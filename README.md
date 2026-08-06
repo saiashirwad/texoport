@@ -107,6 +107,7 @@ CodexLanguageModel.model(undefined, { sandbox: "read-only" })
 | `timeout` | `3 minutes` | Per-call |
 | `sandbox` | `read-only` | Codex only |
 | `cwd` | process cwd | Working directory |
+| `extraArgs` | none | Additional CLI flags appended to the invocation |
 
 ## License
 
