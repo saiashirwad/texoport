@@ -64,22 +64,26 @@ const textStreamBody = (id: string, text: string): Array<Response.StreamPartEnco
   return parts
 }
 
+/** Deep-clone via JSON so provider metadata stays JSON-serializable. */
+const jsonClone = (value: unknown): unknown => JSON.parse(JSON.stringify(value))
+
 export const toParts = (result: Completion): Array<Response.PartEncoded> => {
   const parts: Array<Response.PartEncoded> = []
   const meta = metadataEncoded(result)
   if (meta !== undefined) parts.push(meta)
-  const textPart: Response.TextPartEncoded = {
-    type: "text",
-    text: result.text
-  }
-  if (result.providerKey !== undefined && result.raw !== undefined) {
-    // Provider metadata must be JSON-serializable; stringify unknown raw payloads.
-    ;(textPart as { metadata?: Response.ProviderMetadata }).metadata = {
-      [result.providerKey]: { raw: JSON.parse(JSON.stringify(result.raw)) as never }
-    }
-  }
-  parts.push(textPart)
-  parts.push(finishEncoded(result))
+
+  const textPart: Response.TextPartEncoded =
+    result.providerKey !== undefined && result.raw !== undefined
+      ? {
+        type: "text",
+        text: result.text,
+        metadata: {
+          [result.providerKey]: { raw: jsonClone(result.raw) as never }
+        }
+      }
+      : { type: "text", text: result.text }
+
+  parts.push(textPart, finishEncoded(result))
   return parts
 }
 

@@ -1,10 +1,22 @@
+import type * as Context from "effect/Context"
 import type { PlatformError } from "effect/PlatformError"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import { AiError } from "effect/unstable/ai"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { unknownError } from "./errors.ts"
+
+export type SpawnerService = Context.Service.Shape<typeof ChildProcessSpawner.ChildProcessSpawner>
+
+/** Provide a concrete spawner so CLI effects do not leak ChildProcessSpawner in R. */
+export const provideSpawner = <A, E, R>(
+  effect: Effect.Effect<A, E, R | ChildProcessSpawner.ChildProcessSpawner>,
+  spawner: SpawnerService
+): Effect.Effect<A, E, Exclude<R, ChildProcessSpawner.ChildProcessSpawner>> =>
+  effect.pipe(Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)))
+
 
 export interface SpawnInput {
   readonly command: string

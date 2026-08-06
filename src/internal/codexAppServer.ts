@@ -12,7 +12,7 @@ import * as Option from "effect/Option"
 import * as Queue from "effect/Queue"
 import * as Ref from "effect/Ref"
 import * as Stream from "effect/Stream"
-import { AiError, type LanguageModel, type Prompt, Tool } from "effect/unstable/ai"
+import { AiError } from "effect/unstable/ai"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { malformedOutput, unknownError } from "./errors.ts"
 import {
@@ -25,14 +25,15 @@ import {
   toDynamicTools,
   toolCallReply
 } from "./codexProtocol.ts"
+import { defined } from "./config.ts"
 import { flattenPrompt } from "./prompt.ts"
-import type { Completion, Usage } from "./response.ts"
+import type { Usage } from "./response.ts"
 import { schemaToJsonSchemaArg } from "./schema.ts"
 import {
-  type AnyToolkit,
   invokeTool,
-  type ToolMethod,
-  type ToolPartBuffer
+  type ToolPartBuffer,
+  type ToolTurn,
+  type ToolTurnInput
 } from "./toolkit.ts"
 
 const MODULE = "CodexLanguageModel"
@@ -40,7 +41,7 @@ const fail = unknownError(MODULE)
 const badOutput = malformedOutput(MODULE)
 
 /**
- * Subset of Codex ResolvedConfig used by the app-server tool path.
+ * Runtime config for the app-server tool path.
  * Extra fields on the provider config (e.g. extraArgs) are fine to pass through.
  */
 export interface AppServerConfig {
@@ -51,12 +52,7 @@ export interface AppServerConfig {
   readonly timeout: Duration.Duration
 }
 
-export interface ToolRunInput {
-  readonly prompt: Prompt.Prompt
-  readonly tools: ReadonlyArray<Tool.Any>
-  readonly toolkit: AnyToolkit
-  readonly responseFormat: LanguageModel.ProviderOptions["responseFormat"]
-  readonly method: ToolMethod
+export type ToolRunInput = ToolTurnInput & {
   readonly config: AppServerConfig
 }
 
@@ -67,14 +63,7 @@ type Pending = Deferred.Deferred<unknown, AiError.AiError>
  */
 export const runTurnWithTools = (
   input: ToolRunInput
-): Effect.Effect<
-  {
-    readonly completion: Completion
-    readonly toolParts: ToolPartBuffer
-  },
-  AiError.AiError,
-  ChildProcessSpawner.ChildProcessSpawner
-> =>
+): Effect.Effect<ToolTurn, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.scoped(Effect.gen(function*() {
     const { method, config, toolkit, tools, prompt, responseFormat } = input
     const timeout = config.timeout
@@ -204,9 +193,11 @@ export const runTurnWithTools = (
       ephemeral: true,
       approvalPolicy: "never",
       sandbox: config.sandbox,
-      ...(config.model !== undefined ? { model: config.model } : {}),
-      ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
-      ...(system !== undefined ? { developerInstructions: system } : {}),
+      ...defined({
+        model: config.model,
+        cwd: config.cwd,
+        developerInstructions: system
+      }),
       dynamicTools: toDynamicTools(tools)
     })
 
@@ -215,15 +206,15 @@ export const runTurnWithTools = (
       return yield* Effect.fail(badOutput(method, "thread/start missing thread.id"))
     }
 
-    const turnParams: Record<string, unknown> = {
+    yield* request("turn/start", {
       threadId,
-      input: [{ type: "text", text: user, text_elements: [] }]
-    }
-    if (responseFormat.type === "json") {
-      turnParams["outputSchema"] = JSON.parse(schemaToJsonSchemaArg(responseFormat.schema))
-    }
-
-    yield* request("turn/start", turnParams)
+      input: [{ type: "text", text: user, text_elements: [] }],
+      ...defined({
+        outputSchema: responseFormat.type === "json"
+          ? JSON.parse(schemaToJsonSchemaArg(responseFormat.schema))
+          : undefined
+      })
+    })
 
     yield* Deferred.await(turnDone).pipe(
       Effect.timeoutOrElse({
