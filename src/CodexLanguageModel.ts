@@ -1,8 +1,3 @@
-/**
- * Effect AI LanguageModel over Codex subscription:
- * - plain text/object: `codex exec`
- * - Effect toolkits: `codex app-server` dynamic tools (experimentalApi)
- */
 import { FileSystem, Path } from "effect"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
@@ -77,10 +72,6 @@ export const make = (
       (input) => runTurnWithTools({ ...input, config })
     )
   })
-
-// =============================================================================
-// Plain `codex exec` path (no Effect toolkit)
-// =============================================================================
 
 const completeExec = (
   options: LanguageModel.ProviderOptions,

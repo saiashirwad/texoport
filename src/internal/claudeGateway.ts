@@ -1,7 +1,3 @@
-/**
- * Loopback HTTP gateway that Claude's MCP bridge calls to run Effect tool handlers.
- * One server per tool-enabled turn; auth is a per-turn random token header.
- */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import * as Effect from "effect/Effect"
 import type { AiError } from "effect/unstable/ai"
@@ -27,7 +23,6 @@ export type GatewayHandler = (
   args: unknown
 ) => Promise<{ isFailure: boolean; result: unknown }>
 
-/** Bind an ephemeral 127.0.0.1 server that POSTs /call → handler. */
 export const listenGateway = (
   method: string,
   token: string,
@@ -36,16 +31,14 @@ export const listenGateway = (
   Effect.callback((resume) => {
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method === "POST" && req.url === "/call") {
-        // Loopback-only but otherwise open on the machine; the per-turn token
-        // (custom header — browsers cannot forge it with a no-cors POST) gates tools.
+        // Per-turn token (custom header — browsers cannot forge with no-cors POST).
         if (req.headers["x-effect-ai-subs-token"] !== token) {
           res.writeHead(401)
           res.end()
           return
         }
         try {
-          const raw = await readBody(req)
-          const body = JSON.parse(raw) as { name?: string; arguments?: unknown }
+          const body = JSON.parse(await readBody(req)) as { name?: string; arguments?: unknown }
           const out = await handler(String(body.name ?? ""), body.arguments ?? {})
           res.writeHead(200, { "content-type": "application/json" })
           res.end(JSON.stringify(out))
@@ -64,7 +57,7 @@ export const listenGateway = (
         server.closeAllConnections()
         server.close()
       } catch {
-        // never listened
+        // not listening yet
       }
     }
 

@@ -3,10 +3,6 @@
  *
  * Avoids the Agent SDK OAuth refresh path, which fails when only keychain OAuth
  * is available (common in fish shells without ANTHROPIC_* proxy env).
- *
- * Flow:
- *   HTTP gateway (tool handlers) + temp MCP stdio server
- *   → claude -p --mcp-config … --allowedTools mcp__effect__*
  */
 import { randomUUID } from "node:crypto"
 import * as path from "node:path"
@@ -29,9 +25,6 @@ import {
   toolMetadata
 } from "./toolkit.ts"
 
-const MODULE = "ClaudeLanguageModel"
-
-/** Runtime config for the MCP tool path (same shape the provider resolves). */
 export interface ClaudeAgentConfig {
   readonly model?: string | undefined
   readonly bin: string
@@ -45,12 +38,6 @@ export type ClaudeToolRunInput = ToolTurnInput & {
   readonly config: ClaudeAgentConfig
 }
 
-const mcpServerScriptPath = (): string =>
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "claudeMcpServer.mjs")
-
-/**
- * Run one tool-enabled turn via `claude -p` + MCP (subscription OAuth).
- */
 export const runTurnWithTools = (
   input: ClaudeToolRunInput
 ): Effect.Effect<ToolTurn, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner> =>
@@ -74,7 +61,6 @@ export const runTurnWithTools = (
         const callStartedAt = Date.now()
         log(`tool call: ${name} ${JSON.stringify(args ?? {})}`)
 
-        // invokeTool is total (handler failures + defects → failed tool result).
         const out = await Effect.runPromiseWith(context)(
           invokeTool(toolkit, toolParts, name, args, id)
         )
@@ -89,20 +75,10 @@ export const runTurnWithTools = (
     log(`tool gateway listening on 127.0.0.1:${gateway.port}`)
 
     const { system, user } = flattenPrompt(prompt)
-
-    const mcpConfig = {
-      mcpServers: {
-        effect: {
-          command: process.execPath,
-          args: [mcpServerScriptPath()],
-          env: {
-            EFFECT_AI_SUBS_TOOLS_JSON: JSON.stringify(mcpTools),
-            EFFECT_AI_SUBS_GATEWAY: `http://127.0.0.1:${gateway.port}`,
-            EFFECT_AI_SUBS_GATEWAY_TOKEN: token
-          }
-        }
-      }
-    }
+    const mcpServerPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "claudeMcpServer.mjs"
+    )
 
     const args = buildClaudePrintArgs({
       model: config.model,
@@ -110,7 +86,19 @@ export const runTurnWithTools = (
       responseFormat,
       extraArgs: config.extraArgs,
       mcp: {
-        configJson: JSON.stringify(mcpConfig),
+        configJson: JSON.stringify({
+          mcpServers: {
+            effect: {
+              command: process.execPath,
+              args: [mcpServerPath],
+              env: {
+                EFFECT_AI_SUBS_TOOLS_JSON: JSON.stringify(mcpTools),
+                EFFECT_AI_SUBS_GATEWAY: `http://127.0.0.1:${gateway.port}`,
+                EFFECT_AI_SUBS_GATEWAY_TOKEN: token
+              }
+            }
+          }
+        }),
         allowedTools: mcpTools.map((t) => `mcp__effect__${t.name}`).join(",")
       }
     })
@@ -121,7 +109,7 @@ export const runTurnWithTools = (
       args,
       stdin: user,
       cwd: config.cwd,
-      module: MODULE,
+      module: "ClaudeLanguageModel",
       method,
       timeout: config.timeout,
       onStderr: config.debug ? (chunk) => process.stderr.write(chunk) : undefined

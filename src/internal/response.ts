@@ -64,26 +64,25 @@ const textStreamBody = (id: string, text: string): Array<Response.StreamPartEnco
   return parts
 }
 
-/** Deep-clone via JSON so provider metadata stays JSON-serializable. */
-const jsonClone = (value: unknown): unknown => JSON.parse(JSON.stringify(value))
-
 export const toParts = (result: Completion): Array<Response.PartEncoded> => {
   const parts: Array<Response.PartEncoded> = []
   const meta = metadataEncoded(result)
   if (meta !== undefined) parts.push(meta)
 
-  const textPart: Response.TextPartEncoded =
+  parts.push(
     result.providerKey !== undefined && result.raw !== undefined
       ? {
         type: "text",
         text: result.text,
         metadata: {
-          [result.providerKey]: { raw: jsonClone(result.raw) as never }
+          [result.providerKey]: {
+            raw: JSON.parse(JSON.stringify(result.raw)) as never
+          }
         }
       }
-      : { type: "text", text: result.text }
-
-  parts.push(textPart, finishEncoded(result))
+      : { type: "text", text: result.text },
+    finishEncoded(result)
+  )
   return parts
 }
 
@@ -101,27 +100,6 @@ export type ToolParts = ReadonlyArray<
   Response.ToolCallPartEncoded | Response.ToolResultPartEncoded
 >
 
-const toolPart = (
-  part: ToolParts[number]
-): Response.AnyPart =>
-  part.type === "tool-call"
-    ? Response.makePart("tool-call", {
-      id: part.id,
-      name: part.name,
-      params: part.params as never,
-      providerExecuted: false
-    })
-    : Response.toolResultPart({
-      id: part.id,
-      name: part.name,
-      isFailure: part.isFailure,
-      result: part.result as never,
-      encodedResult: part.result,
-      providerExecuted: false,
-      preliminary: false
-    })
-
-/** Decoded parts for a tool-enabled turn: metadata, tool calls/results, text, finish. */
 export const assembleParts = (
   completion: Completion,
   toolParts: ToolParts
@@ -135,7 +113,26 @@ export const assembleParts = (
       request: undefined
     }))
   }
-  for (const part of toolParts) parts.push(toolPart(part))
+  for (const part of toolParts) {
+    parts.push(
+      part.type === "tool-call"
+        ? Response.makePart("tool-call", {
+          id: part.id,
+          name: part.name,
+          params: part.params as never,
+          providerExecuted: false
+        })
+        : Response.toolResultPart({
+          id: part.id,
+          name: part.name,
+          isFailure: part.isFailure,
+          result: part.result as never,
+          encodedResult: part.result,
+          providerExecuted: false,
+          preliminary: false
+        })
+    )
+  }
   if (completion.text.length > 0) {
     parts.push(Response.makePart("text", { text: completion.text }))
   }
@@ -149,7 +146,6 @@ export const assembleParts = (
   return parts
 }
 
-/** Pseudo-stream for a tool-enabled turn: tool parts, then the text stream parts. */
 export const assembleStreamParts = (
   completion: Completion,
   toolParts: ToolParts

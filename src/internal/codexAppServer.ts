@@ -1,8 +1,6 @@
 /**
  * Codex app-server session: spawn stdio JSON-RPC, run one turn with Effect tools.
- *
- * Wire-format decoding lives in codexProtocol.ts; this file owns process I/O
- * and the request/response session loop.
+ * Wire-format decoding lives in codexProtocol.ts.
  */
 import * as Duration from "effect/Duration"
 import * as Deferred from "effect/Deferred"
@@ -36,14 +34,9 @@ import {
   type ToolTurnInput
 } from "./toolkit.ts"
 
-const MODULE = "CodexLanguageModel"
-const fail = unknownError(MODULE)
-const badOutput = malformedOutput(MODULE)
+const fail = unknownError("CodexLanguageModel")
+const badOutput = malformedOutput("CodexLanguageModel")
 
-/**
- * Runtime config for the app-server tool path.
- * Extra fields on the provider config (e.g. extraArgs) are fine to pass through.
- */
 export interface AppServerConfig {
   readonly bin: string
   readonly model?: string | undefined
@@ -58,9 +51,6 @@ export type ToolRunInput = ToolTurnInput & {
 
 type Pending = Deferred.Deferred<unknown, AiError.AiError>
 
-/**
- * Run one user turn on app-server, executing Effect tools when requested.
- */
 export const runTurnWithTools = (
   input: ToolRunInput
 ): Effect.Effect<ToolTurn, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner> =>
@@ -76,7 +66,7 @@ export const runTurnWithTools = (
     const inbound = yield* Queue.unbounded<Inbound>()
     const turnDone = yield* Deferred.make<void, AiError.AiError>()
 
-    // Keep stdin open for the whole session: a fiber drains outbound into process.stdin.
+    // Keep stdin open for the whole session via a drain fiber.
     const outbound = yield* Queue.unbounded<Uint8Array>()
     yield* Stream.fromQueue(outbound).pipe(
       Stream.run(process.stdin),
@@ -90,9 +80,7 @@ export const runTurnWithTools = (
         return msg === undefined ? Effect.void : Queue.offer(inbound, msg)
       }
     ).pipe(
-      // If the app-server exits (or the stream fails) the turn can never
-      // complete; unblock the Deferred.await below instead of hanging until
-      // the turn timeout.
+      // Unblock Deferred.await if the app-server exits before turn completion.
       Effect.ensuring(Deferred.fail(turnDone, fail(method, "codex app-server exited before completing the turn"))),
       Effect.forkScoped
     )
@@ -121,26 +109,6 @@ export const runTurnWithTools = (
     let text = ""
     let usage: Usage | undefined
 
-    const handleToolCall = (id: string | number, params: Record<string, unknown>) =>
-      Effect.gen(function*() {
-        const callId = String(params["callId"] ?? "")
-        const toolName = String(params["tool"] ?? "")
-        const out = yield* invokeTool(toolkit, toolParts, toolName, params["arguments"], callId)
-        yield* reply(id, toolCallReply(out.isFailure, out.result))
-      })
-
-    const settleResponse = (id: string | number, error: unknown | undefined, result: unknown | undefined) =>
-      Effect.gen(function*() {
-        const map = yield* Ref.get(pending)
-        const def = HashMap.get(map, id)
-        if (Option.isNone(def)) return
-        if (error !== undefined) {
-          yield* Deferred.fail(def.value, fail(method, `codex app-server error: ${JSON.stringify(error)}`))
-        } else {
-          yield* Deferred.succeed(def.value, result)
-        }
-      })
-
     const applySignal = (signal: TurnSignal) => {
       switch (signal._tag) {
         case "SetText":
@@ -163,15 +131,32 @@ export const runTurnWithTools = (
       Effect.gen(function*() {
         const msg = yield* Queue.take(inbound)
         switch (msg.kind) {
-          case "rpc-response":
-            yield* settleResponse(msg.id, msg.error, msg.result)
+          case "rpc-response": {
+            const map = yield* Ref.get(pending)
+            const def = HashMap.get(map, msg.id)
+            if (Option.isNone(def)) return
+            if (msg.error !== undefined) {
+              yield* Deferred.fail(def.value, fail(method, `codex app-server error: ${JSON.stringify(msg.error)}`))
+            } else {
+              yield* Deferred.succeed(def.value, msg.result)
+            }
             return
+          }
           case "rpc-request":
             // item/tool/call runs Effect tools; all approval RPCs are declined
             // (sandbox + approvalPolicy "never" are set at thread/start).
-            yield* msg.method === "item/tool/call"
-              ? handleToolCall(msg.id, msg.params)
-              : reply(msg.id, { decision: "decline" })
+            if (msg.method === "item/tool/call") {
+              const out = yield* invokeTool(
+                toolkit,
+                toolParts,
+                String(msg.params["tool"] ?? ""),
+                msg.params["arguments"],
+                String(msg.params["callId"] ?? "")
+              )
+              yield* reply(msg.id, toolCallReply(out.isFailure, out.result))
+            } else {
+              yield* reply(msg.id, { decision: "decline" })
+            }
             return
           case "notification":
             yield* applySignal(interpretNotification(msg.method, msg.params))

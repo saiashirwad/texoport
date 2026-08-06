@@ -5,9 +5,8 @@ import { malformedOutput, unknownError } from "./errors.ts"
 import type { Completion } from "./response.ts"
 import type { SpawnCapture } from "./spawn.ts"
 
-const MODULE = "ClaudeLanguageModel"
-const fail = unknownError(MODULE)
-const badOutput = malformedOutput(MODULE)
+const fail = unknownError("ClaudeLanguageModel")
+const badOutput = malformedOutput("ClaudeLanguageModel")
 
 class ClaudeUsage extends Schema.Class<ClaudeUsage>("ClaudeUsage")({
   input_tokens: Schema.optional(Schema.Finite),
@@ -58,7 +57,7 @@ export const parseClaudeCapture = (
       )
     )
 
-    // A non-zero exit is a failure even when the JSON envelope parses cleanly.
+    // Non-zero exit fails even when the JSON envelope parses cleanly.
     if (capture.exitCode !== 0) {
       return yield* Effect.fail(fail(method, exitDescription(capture, envelope.result)))
     }

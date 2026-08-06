@@ -37,14 +37,12 @@ export const flattenPrompt = (prompt: Prompt.Prompt): FlattenedPrompt => {
     }
   }
 
-  const user = turns.length === 0
-    ? " "
-    : turns.length === 1 && turns[0]!.startsWith("User: ")
-    ? turns[0]!.slice(6)
-    : turns.join("\n\n")
-
   return {
     system: systems.length > 0 ? systems.join("\n\n") : undefined,
-    user
+    user: turns.length === 0
+      ? " "
+      : turns.length === 1 && turns[0]!.startsWith("User: ")
+      ? turns[0]!.slice(6)
+      : turns.join("\n\n")
   }
 }

@@ -1,11 +1,9 @@
 /**
- * Minimal MCP stdio server for effect-ai-subs Claude toolkits.
- * Tool list + gateway URL come from env; tools/call is proxied to the parent process.
+ * MCP stdio bridge: tools + gateway from env; tools/call proxies to the parent.
  *
- * Env:
- *   EFFECT_AI_SUBS_TOOLS_JSON       - JSON array of { name, description, inputSchema }
- *   EFFECT_AI_SUBS_GATEWAY          - http://127.0.0.1:<port>
- *   EFFECT_AI_SUBS_GATEWAY_TOKEN    - per-turn auth token for the gateway
+ *   EFFECT_AI_SUBS_TOOLS_JSON
+ *   EFFECT_AI_SUBS_GATEWAY
+ *   EFFECT_AI_SUBS_GATEWAY_TOKEN
  */
 import { createInterface } from "node:readline"
 
@@ -24,15 +22,12 @@ const callGateway = async (name, args) => {
     body: JSON.stringify({ name, arguments: args ?? {} })
   })
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`gateway ${res.status}: ${text}`)
+    throw new Error(`gateway ${res.status}: ${await res.text()}`)
   }
   return /** @type {{ isFailure: boolean, result: unknown }} */ (await res.json())
 }
 
-const rl = createInterface({ input: process.stdin, terminal: false })
-
-rl.on("line", async (line) => {
+createInterface({ input: process.stdin, terminal: false }).on("line", async (line) => {
   if (!line.trim()) return
   let msg
   try {
@@ -64,10 +59,8 @@ rl.on("line", async (line) => {
   }
 
   if (method === "tools/call") {
-    const name = params?.name
-    const args = params?.arguments ?? {}
     try {
-      const out = await callGateway(name, args)
+      const out = await callGateway(params?.name, params?.arguments ?? {})
       const text = typeof out.result === "string"
         ? out.result
         : (JSON.stringify(out.result) ?? "")

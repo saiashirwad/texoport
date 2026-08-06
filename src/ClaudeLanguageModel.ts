@@ -1,8 +1,3 @@
-/**
- * Effect AI LanguageModel over Claude Code subscription (Pro/Max):
- * - plain text/object: `claude -p`
- * - Effect toolkits: `claude -p` + local MCP bridge (same OAuth as the CLI)
- */
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import { type AiError, LanguageModel, Model as AiModel } from "effect/unstable/ai"
@@ -29,9 +24,7 @@ export interface Config extends BaseConfig {
   readonly debug?: boolean | undefined
 }
 
-type ResolvedConfig = ClaudeAgentConfig
-
-const resolveConfig = (config: Config = {}): ResolvedConfig => ({
+const resolveConfig = (config: Config = {}): ClaudeAgentConfig => ({
   ...resolveBase(config, "claude"),
   debug: config.debug === true
 })
@@ -66,13 +59,9 @@ export const make = (
     )
   })
 
-// =============================================================================
-// Plain `claude -p` path (no Effect toolkit)
-// =============================================================================
-
 const completeCli = (
   options: LanguageModel.ProviderOptions,
-  config: ResolvedConfig,
+  config: ClaudeAgentConfig,
   method: "generateText" | "streamText"
 ): Effect.Effect<Completion, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function*() {

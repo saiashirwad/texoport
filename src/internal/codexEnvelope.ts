@@ -6,8 +6,7 @@ import { unknownError } from "./errors.ts"
 import type { Completion, Usage } from "./response.ts"
 import type { SpawnCapture } from "./spawn.ts"
 
-const MODULE = "CodexLanguageModel"
-const fail = unknownError(MODULE)
+const fail = unknownError("CodexLanguageModel")
 
 class CodexUsage extends Schema.Class<CodexUsage>("CodexUsage")({
   input_tokens: Schema.optional(Schema.Finite),
@@ -53,16 +52,6 @@ export type CodexEvent = typeof CodexEvent.Type
 const decodeEvent = Schema.decodeUnknownResult(Schema.fromJsonString(CodexEvent))
 const decodeAgentMessage = Schema.decodeUnknownResult(CodexAgentMessage)
 
-const lines = (stdout: string): Array<string> =>
-  stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
-
-const usageOf = (u: CodexUsage): Usage => ({
-  inputTokens: u.input_tokens,
-  outputTokens: u.output_tokens,
-  cachedInputTokens: u.cached_input_tokens,
-  reasoningTokens: u.reasoning_output_tokens
-})
-
 export const parseCodexCapture = (
   capture: SpawnCapture,
   method = "generateText"
@@ -74,8 +63,10 @@ export const parseCodexCapture = (
     let error: string | undefined
     const raw: Array<CodexEvent> = []
 
-    for (const line of lines(capture.stdout)) {
-      const decoded = decodeEvent(line)
+    for (const line of capture.stdout.split("\n")) {
+      const trimmed = line.trim()
+      if (trimmed.length === 0) continue
+      const decoded = decodeEvent(trimmed)
       if (Result.isFailure(decoded)) continue
       const event = decoded.success
       raw.push(event)
@@ -90,7 +81,14 @@ export const parseCodexCapture = (
           break
         }
         case "turn.completed":
-          if (event.usage !== undefined) usage = usageOf(event.usage)
+          if (event.usage !== undefined) {
+            usage = {
+              inputTokens: event.usage.input_tokens,
+              outputTokens: event.usage.output_tokens,
+              cachedInputTokens: event.usage.cached_input_tokens,
+              reasoningTokens: event.usage.reasoning_output_tokens
+            }
+          }
           break
         case "error":
           error = event.message ?? "codex reported an error"
@@ -98,7 +96,7 @@ export const parseCodexCapture = (
       }
     }
 
-    // An error event fails the turn even if partial text was emitted first.
+    // Error event fails the turn even if partial text was emitted first.
     if (error !== undefined) {
       return yield* Effect.fail(fail(method, error))
     }

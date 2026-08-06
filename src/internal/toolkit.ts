@@ -1,7 +1,3 @@
-/**
- * Shared toolkit plumbing for the CLI-backed providers: resolve the toolkit
- * once, run the provider's tool turn, and assemble the response parts.
- */
 import * as Effect from "effect/Effect"
 import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
@@ -36,7 +32,6 @@ export interface ToolTurn {
   readonly toolParts: ToolParts
 }
 
-/** Mutable buffer both agent paths push tool call/result parts into. */
 export type ToolPartBuffer = Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded>
 
 export interface ToolInvokeResult {
@@ -44,13 +39,11 @@ export interface ToolInvokeResult {
   readonly result: unknown
 }
 
-/** Coerce tool call arguments into the params record shape Response expects. */
 export const asToolParams = (args: unknown): Record<string, unknown> =>
   args !== null && typeof args === "object" && !Array.isArray(args)
     ? args as Record<string, unknown>
     : {}
 
-/** MCP/dynamic-tool metadata for one Effect tool. */
 export const toolMetadata = (tool: Tool.Any) => ({
   name: tool.name,
   description: Tool.getDescription(tool as never) ?? `Tool ${tool.name}`,
@@ -93,8 +86,8 @@ const hasPart = (toolParts: ToolPartBuffer, type: "tool-call" | "tool-result", i
   toolParts.some((p) => p.type === type && p.id === id)
 
 /**
- * Record a tool-call part, run the handler, record the tool-result part.
- * Handler failures and runtime defects become failed tool results (total).
+ * Record call + result parts. Handler failures and defects become failed tool
+ * results so the surface stays total.
  */
 export const invokeTool = (
   toolkit: AnyToolkit,
@@ -114,11 +107,10 @@ export const invokeTool = (
   const body = Effect.gen(function*() {
     pushToolCall(toolParts, id, name, args)
 
+    // v4 handle returns Effect<Stream<HandlerResult>>; take the last chunk.
     const outcome: ToolInvokeResult = yield* Effect.gen(function*() {
-      // v4 handle returns Effect<Stream<HandlerResult>>; take the last chunk.
       const resultStream = yield* toolkit.handle(name, args as never, id)
-      const chunks = yield* Stream.runCollect(resultStream)
-      const last = chunks.at(-1)
+      const last = (yield* Stream.runCollect(resultStream)).at(-1)
       if (last === undefined) return failed("tool handler produced no result")
       return { isFailure: last.isFailure, result: last.encodedResult } satisfies ToolInvokeResult
     }).pipe(
@@ -133,36 +125,20 @@ export const invokeTool = (
     Effect.catchDefect((error) => Effect.sync(() => ensureFailedParts(String(error))))
   )
 
-  // Tool handlers may declare services; failures collapse into ToolInvokeResult so
-  // the public surface stays total with no leftover requirements.
   return body as Effect.Effect<ToolInvokeResult>
 }
 
-/** Stringify a tool result for transport (MCP content / Codex contentItems). */
 export const encodeToolResultText = (result: unknown): string =>
   typeof result === "string" ? result : JSON.stringify(result) ?? ""
 
 type ToolkitOption = AnyToolkit | Effect.Effect<AnyToolkit, any, any> | undefined
 
-/** Resolve a toolkit option to an active toolkit, or undefined when tools are off. */
-const resolveActiveToolkit = (
-  toolkit: ToolkitOption
-): Effect.Effect<AnyToolkit | undefined> =>
-  Effect.gen(function*() {
-    if (Predicate.isUndefined(toolkit)) return undefined
-    // Toolkit handlers may require services; collapse to the resolved shape only.
-    const resolved = Effect.isEffect(toolkit)
-      ? yield* (toolkit as Effect.Effect<AnyToolkit>)
-      : toolkit
-    return Object.values(resolved.tools).length > 0 ? resolved : undefined
-  }) as Effect.Effect<AnyToolkit | undefined>
-
 /**
- * Build a LanguageModel.Service that delegates tool-enabled calls to the
- * provider's tool turn runner and everything else to the plain CLI base.
+ * LanguageModel.Service that routes tool-enabled calls through runTurn and
+ * everything else through the plain CLI base.
  *
- * Note: several `as never` casts exist because LanguageModel.Service overloads
- * are toolkit-generic; custom providers that reassemble Response parts cannot
+ * Several `as never` casts exist because LanguageModel.Service overloads are
+ * toolkit-generic; custom providers that reassemble Response parts cannot
  * satisfy those overloads without an escape hatch.
  */
 export const makeToolkitService = (
@@ -192,15 +168,19 @@ export const makeToolkitService = (
       spawner
     )
 
-  /** Prefer the tool path when a non-empty toolkit is present; otherwise the CLI base. */
   const withOptionalToolkit = <A, E, R>(
     toolkitOption: ToolkitOption,
     baseCall: Effect.Effect<A, E, R>,
     toolCall: (toolkit: AnyToolkit) => Effect.Effect<A, E | AiError.AiError, R>
   ): Effect.Effect<A, E | AiError.AiError, R> =>
     Effect.gen(function*() {
-      const toolkit = yield* resolveActiveToolkit(toolkitOption)
-      return toolkit === undefined ? yield* baseCall : yield* toolCall(toolkit)
+      if (Predicate.isUndefined(toolkitOption)) return yield* baseCall
+      const resolved = Effect.isEffect(toolkitOption)
+        ? yield* (toolkitOption as Effect.Effect<AnyToolkit>)
+        : toolkitOption
+      return Object.values(resolved.tools).length > 0
+        ? yield* toolCall(resolved)
+        : yield* baseCall
     }) as Effect.Effect<A, E | AiError.AiError, R>
 
   return {
@@ -229,7 +209,6 @@ export const makeToolkitService = (
               objectName: options.objectName ?? "object",
               schema: options.schema
             }, "generateObject")
-            const parts = assembleParts(turn.completion, turn.toolParts)
             const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(options.schema))(
               turn.completion.text
             ).pipe(
@@ -237,7 +216,10 @@ export const makeToolkitService = (
                 failMalformed("generateObject", "Generated object failed schema validation", cause)
               )
             )
-            return new LanguageModel.GenerateObjectResponse(value, parts as never)
+            return new LanguageModel.GenerateObjectResponse(
+              value,
+              assembleParts(turn.completion, turn.toolParts) as never
+            )
           })
       ),
 

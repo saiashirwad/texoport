@@ -2,8 +2,7 @@ import * as Result from "effect/Result"
 import * as Schema from "effect/Schema"
 import { Tool } from "effect/unstable/ai"
 
-const JsonObject = Schema.Record(Schema.String, Schema.Unknown)
-const asObject = Schema.decodeUnknownResult(JsonObject)
+const asObject = Schema.decodeUnknownResult(Schema.Record(Schema.String, Schema.Unknown))
 
 /**
  * Effect JSONSchema sometimes emits a bare root `$ref` + `$defs`.
@@ -26,6 +25,5 @@ export const hoistRootRef = (root: unknown): unknown => {
   return { ...rest, ...target.success, $defs: defs.success }
 }
 
-/** Convert an Effect Schema into a JSON Schema string for CLI flags / app-server. */
 export const schemaToJsonSchemaArg = (schema: Schema.Top): string =>
   JSON.stringify(hoistRootRef(Tool.getJsonSchemaFromSchema(schema as Schema.Constraint)))

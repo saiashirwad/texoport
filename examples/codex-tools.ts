@@ -1,8 +1,3 @@
-/**
- * Effect toolkit via Codex app-server dynamic tools (subscription).
- *
- *   pnpm example:codex-tools
- */
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Effect, Schema } from "effect"

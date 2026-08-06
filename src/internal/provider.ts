@@ -1,7 +1,3 @@
-/**
- * Shared LanguageModel construction for CLI-backed providers:
- * plain complete → LanguageModel.make base, then toolkit wrap.
- */
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
 import { type AiError, LanguageModel } from "effect/unstable/ai"
@@ -19,9 +15,6 @@ export type RunTurnFn = (
   input: ToolTurnInput
 ) => Effect.Effect<ToolTurn, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner>
 
-/**
- * Build a LanguageModel.Service: CLI complete for text/stream, tool turn when a toolkit is active.
- */
 export const makeProviderService = (
   module: string,
   spawner: SpawnerService,

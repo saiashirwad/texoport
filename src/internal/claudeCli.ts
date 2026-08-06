@@ -1,6 +1,3 @@
-/**
- * Shared `claude -p` argv construction for the plain CLI path and the MCP tool path.
- */
 import type { LanguageModel } from "effect/unstable/ai"
 import { schemaToJsonSchemaArg } from "./schema.ts"
 
@@ -9,14 +6,12 @@ export interface ClaudePrintArgsInput {
   readonly system?: string | undefined
   readonly responseFormat: LanguageModel.ProviderOptions["responseFormat"]
   readonly extraArgs?: ReadonlyArray<string> | undefined
-  /** When set, enables the MCP bridge flags for Effect toolkits. */
   readonly mcp?: {
     readonly configJson: string
     readonly allowedTools: string
   } | undefined
 }
 
-/** Build argv for `claude -p --output-format json` (optionally with MCP tools). */
 export const buildClaudePrintArgs = (input: ClaudePrintArgsInput): Array<string> => {
   const args = ["-p", "--output-format", "json", "--tools", ""]
 

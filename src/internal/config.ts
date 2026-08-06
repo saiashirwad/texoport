@@ -1,10 +1,5 @@
-/**
- * Shared CLI-provider config: optional-field helpers for exactOptionalPropertyTypes,
- * and the common resolved shape both providers build on.
- */
 import * as Duration from "effect/Duration"
 
-/** Shared defaults for CLI-backed providers. */
 export const DEFAULT_TIMEOUT = "3 minutes" as const
 
 export interface BaseConfig {
@@ -24,8 +19,8 @@ export interface ResolvedBase {
 }
 
 /**
- * Keep only defined optional keys. Required under exactOptionalPropertyTypes:
- * spreading `model: undefined` would still place the key and break assignability.
+ * Drop undefined optionals. Under exactOptionalPropertyTypes, spreading
+ * `model: undefined` still places the key and breaks assignability.
  */
 export const defined = <T extends object>(
   fields: { readonly [K in keyof T]?: T[K] | undefined }
@@ -38,7 +33,6 @@ export const defined = <T extends object>(
   return out as { readonly [K in keyof T]?: Exclude<T[K], undefined> }
 }
 
-/** Resolve shared bin/cwd/timeout/model/extraArgs with a provider default binary name. */
 export const resolveBase = (config: BaseConfig, defaultBin: string): ResolvedBase => ({
   ...defined({
     model: config.model,
