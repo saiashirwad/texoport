@@ -1,10 +1,13 @@
 {
   "name": "@texoport/effect-ai-claude",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Effect AI LanguageModel provider for your Claude Code subscription.",
   "license": "MIT",
   "type": "module",
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "repository": "github:saiashirwad/texoport",
   "exports": {
     ".": {
