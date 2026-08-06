@@ -1,9 +1,9 @@
-# @texoport Effect AI
+# @texoport
 
-This is a pnpm workspace for independently published Effect AI providers:
+This is my pnpm monorepo for independently published packages, mostly related to Effect. It currently contains:
 
-- `@texoport/effect-ai-claude` calls the signed-in `claude` CLI.
-- `@texoport/effect-ai-codex` calls the signed-in `codex` CLI.
+- `@texoport/effect-ai-claude`, an Effect `LanguageModel` provider that calls the signed-in `claude` CLI.
+- `@texoport/effect-ai-codex`, an Effect `LanguageModel` provider that calls the signed-in `codex` CLI.
 
 ## Daily work
 
