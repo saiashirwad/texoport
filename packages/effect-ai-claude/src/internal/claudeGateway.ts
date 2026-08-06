@@ -32,7 +32,7 @@ export const listenGateway = (
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method === "POST" && req.url === "/call") {
         // Per-turn token (custom header — browsers cannot forge with no-cors POST).
-        if (req.headers["x-effect-ai-subs-token"] !== token) {
+        if (req.headers["x-effect-ai-claude-token"] !== token) {
           res.writeHead(401)
           res.end()
           return

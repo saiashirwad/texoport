@@ -1,58 +1,24 @@
 {
-  "name": "effect-ai-subs",
-  "version": "0.1.0",
-  "description": "Effect AI LanguageModel providers that bill against your Claude Code / ChatGPT (Codex) subscriptions via local CLIs",
-  "keywords": [
-    "effect",
-    "effect-ai",
-    "claude",
-    "claude-code",
-    "codex",
-    "chatgpt",
-    "subscription",
-    "llm"
-  ],
-  "license": "MIT",
-  "type": "module",
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./claude": {
-      "types": "./dist/ClaudeLanguageModel.d.ts",
-      "import": "./dist/ClaudeLanguageModel.js"
-    },
-    "./codex": {
-      "types": "./dist/CodexLanguageModel.d.ts",
-      "import": "./dist/CodexLanguageModel.js"
-    },
-    "./package.json": "./package.json"
+  "name": "@texoport/effect-ai",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Effect AI providers powered by local Claude Code and Codex subscriptions.",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=22.14"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/internal/claudeMcpServer.mjs dist/internal/claudeMcpServer.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --experimental-strip-types test/prompt.test.ts test/response.test.ts test/envelopes.test.ts",
-    "example:claude": "node --experimental-strip-types examples/claude.ts",
-    "example:codex": "node --experimental-strip-types examples/codex.ts",
-    "example:codex-tools": "node --experimental-strip-types examples/codex-tools.ts",
-    "example:claude-tools": "node --experimental-strip-types examples/claude-tools.ts",
-    "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
-  },
-  "peerDependencies": {
-    "effect": "4.0.0-beta.104"
+    "build": "pnpm -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm build && pnpm -r run typecheck",
+    "test": "pnpm build && pnpm -r run test",
+    "check": "pnpm typecheck && pnpm test",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build && changeset publish"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-beta.104",
+    "@changesets/cli": "^2.29.8",
     "@types/node": "^24.13.3",
-    "effect": "4.0.0-beta.104",
     "typescript": "^5.9.3"
-  },
-  "engines": {
-    "node": ">=22.6"
   }
 }

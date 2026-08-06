@@ -182,7 +182,7 @@ export const runTurnWithTools = (
       ).pipe(Effect.forkScoped);
 
       yield* request("initialize", {
-        clientInfo: { name: "effect-ai-subs", title: "effect-ai-subs", version: "0.1.0" },
+        clientInfo: { name: "@texoport/effect-ai-codex", title: "effect-ai-codex", version: "0.1.0" },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
       yield* write({ method: "initialized" });

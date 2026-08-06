@@ -23,6 +23,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "noEmit": true
-  },
-  "include": ["src", "test", "examples"]
+  }
 }

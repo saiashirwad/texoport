@@ -111,7 +111,7 @@ const completeExec = (
 
     const jsonSchema = schemaToJsonSchemaArg(options.responseFormat.schema)
     const capture = yield* Effect.acquireUseRelease(
-      services.fs.makeTempDirectory({ prefix: "effect-ai-subs-" }).pipe(
+      services.fs.makeTempDirectory({ prefix: "effect-ai-codex-" }).pipe(
         Effect.mapError((cause) =>
           fail(effectiveMethod, "failed to create temp dir for output schema", cause)
         )

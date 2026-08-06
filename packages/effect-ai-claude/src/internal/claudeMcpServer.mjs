@@ -18,7 +18,7 @@ const write = (msg) => {
 const callGateway = async (name, args) => {
   const res = await fetch(`${gateway}/call`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-effect-ai-subs-token": token },
+    headers: { "content-type": "application/json", "x-effect-ai-claude-token": token },
     body: JSON.stringify({ name, arguments: args ?? {} })
   })
   if (!res.ok) {

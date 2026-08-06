@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { Effect, Result, Schema } from "effect"
-import { ClaudeEnvelope, parseClaudeCapture } from "../src/internal/claudeEnvelope.ts"
 import { CodexEvent, parseCodexCapture } from "../src/internal/codexEnvelope.ts"
 import {
   classifyInbound,
@@ -9,50 +8,6 @@ import {
   threadIdFromStartResult
 } from "../src/internal/codexProtocol.ts"
 import { asToolParams } from "../src/internal/toolkit.ts"
-
-describe("ClaudeEnvelope", () => {
-  it("decodes success JSON", () => {
-    const decoded = Schema.decodeUnknownSync(Schema.fromJsonString(ClaudeEnvelope))(JSON.stringify({
-      is_error: false,
-      result: "pong",
-      session_id: "sess-1",
-      stop_reason: "end_turn",
-      usage: { input_tokens: 2, output_tokens: 4, cache_read_input_tokens: 10 },
-      modelUsage: { "claude-sonnet": { costUSD: 0.01 } },
-      extra_cli_field: true
-    }))
-    assert.equal(decoded.result, "pong")
-    assert.equal(decoded.session_id, "sess-1")
-    assert.equal(decoded.usage?.input_tokens, 2)
-  })
-
-  it("parseClaudeCapture maps envelope → completion", async () => {
-    const result = await Effect.runPromise(parseClaudeCapture({
-      stdout: JSON.stringify({
-        is_error: false,
-        result: "hi",
-        session_id: "s",
-        stop_reason: "end_turn",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        modelUsage: { m: {} }
-      }),
-      stderr: "",
-      exitCode: 0
-    }))
-    assert.equal(result.text, "hi")
-    assert.equal(result.modelId, "m")
-    assert.equal(result.finishReason, "stop")
-  })
-
-  it("fails on is_error", async () => {
-    const exit = await Effect.runPromiseExit(parseClaudeCapture({
-      stdout: JSON.stringify({ is_error: true, result: "rate limited" }),
-      stderr: "",
-      exitCode: 1
-    }))
-    assert.equal(exit._tag, "Failure")
-  })
-})
 
 describe("CodexEvent", () => {
   it("decodes event variants", () => {
