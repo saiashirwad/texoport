@@ -1,7 +1,7 @@
-import * as AiError from "@effect/ai/AiError"
 import * as Effect from "effect/Effect"
-import * as Either from "effect/Either"
+import * as Result from "effect/Result"
 import * as Schema from "effect/Schema"
+import type { AiError } from "effect/unstable/ai"
 import { unknownError } from "./errors.ts"
 import type { Completion, Usage } from "./response.ts"
 import type { SpawnCapture } from "./spawn.ts"
@@ -9,13 +9,11 @@ import type { SpawnCapture } from "./spawn.ts"
 const MODULE = "CodexLanguageModel"
 const fail = unknownError(MODULE)
 
-const Number_ = Schema.Number.pipe(Schema.finite())
-
 class CodexUsage extends Schema.Class<CodexUsage>("CodexUsage")({
-  input_tokens: Schema.optional(Number_),
-  output_tokens: Schema.optional(Number_),
-  cached_input_tokens: Schema.optional(Number_),
-  reasoning_output_tokens: Schema.optional(Number_)
+  input_tokens: Schema.optional(Schema.Finite),
+  output_tokens: Schema.optional(Schema.Finite),
+  cached_input_tokens: Schema.optional(Schema.Finite),
+  reasoning_output_tokens: Schema.optional(Schema.Finite)
 }) {}
 
 class CodexThreadStarted extends Schema.Class<CodexThreadStarted>("CodexThreadStarted")({
@@ -44,16 +42,16 @@ class CodexErrorEvent extends Schema.Class<CodexErrorEvent>("CodexErrorEvent")({
   message: Schema.optional(Schema.String)
 }) {}
 
-export const CodexEvent = Schema.Union(
+export const CodexEvent = Schema.Union([
   CodexThreadStarted,
   CodexItemCompleted,
   CodexTurnCompleted,
   CodexErrorEvent
-)
+])
 export type CodexEvent = typeof CodexEvent.Type
 
-const decodeEvent = Schema.decodeUnknownEither(Schema.parseJson(CodexEvent))
-const decodeAgentMessage = Schema.decodeUnknownEither(CodexAgentMessage)
+const decodeEvent = Schema.decodeUnknownResult(Schema.fromJsonString(CodexEvent))
+const decodeAgentMessage = Schema.decodeUnknownResult(CodexAgentMessage)
 
 const lines = (stdout: string): Array<string> =>
   stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
@@ -78,8 +76,8 @@ export const parseCodexCapture = (
 
     for (const line of lines(capture.stdout)) {
       const decoded = decodeEvent(line)
-      if (Either.isLeft(decoded)) continue
-      const event = decoded.right
+      if (Result.isFailure(decoded)) continue
+      const event = decoded.success
       raw.push(event)
 
       switch (event.type) {
@@ -88,7 +86,7 @@ export const parseCodexCapture = (
           break
         case "item.completed": {
           const item = decodeAgentMessage(event.item)
-          if (Either.isRight(item)) text = item.right.text
+          if (Result.isSuccess(item)) text = item.success.text
           break
         }
         case "turn.completed":
@@ -102,15 +100,17 @@ export const parseCodexCapture = (
 
     // An error event fails the turn even if partial text was emitted first.
     if (error !== undefined) {
-      return yield* fail(method, error)
+      return yield* Effect.fail(fail(method, error))
     }
 
     if (capture.exitCode !== 0) {
-      return yield* fail(
-        method,
-        `codex exited ${capture.exitCode}: ${
-          capture.stderr.trim() || capture.stdout.trim() || "(empty)"
-        }`
+      return yield* Effect.fail(
+        fail(
+          method,
+          `codex exited ${capture.exitCode}: ${
+            capture.stderr.trim() || capture.stdout.trim() || "(empty)"
+          }`
+        )
       )
     }
 

@@ -4,22 +4,22 @@
  *
  * Keeps the session loop in codexAppServer free of wire-format details.
  */
-import type * as Tool from "@effect/ai/Tool"
-import * as Either from "effect/Either"
+import * as Result from "effect/Result"
 import * as Schema from "effect/Schema"
+import type { Tool } from "effect/unstable/ai"
 import type { Usage } from "./response.ts"
 import { encodeToolResultText, toolMetadata } from "./toolkit.ts"
 
-const decodeLine = Schema.decodeUnknownEither(Schema.parseJson(Schema.Unknown))
-const asRecord = Schema.decodeUnknownEither(
-  Schema.Record({ key: Schema.String, value: Schema.Unknown })
+const decodeLine = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))
+const asRecord = Schema.decodeUnknownResult(
+  Schema.Record(Schema.String, Schema.Unknown)
 )
 
 const AgentMessageItem = Schema.Struct({
   type: Schema.Literal("agentMessage"),
   text: Schema.String
 })
-const decodeAgentMessageItem = Schema.decodeUnknownEither(AgentMessageItem)
+const decodeAgentMessageItem = Schema.decodeUnknownResult(AgentMessageItem)
 
 const TokenUsageParams = Schema.Struct({
   tokenUsage: Schema.optional(Schema.Struct({
@@ -32,7 +32,7 @@ const TokenUsageParams = Schema.Struct({
     })))
   }))
 })
-const decodeTokenUsageParams = Schema.decodeUnknownEither(TokenUsageParams)
+const decodeTokenUsageParams = Schema.decodeUnknownResult(TokenUsageParams)
 
 const TurnCompletedParams = Schema.Struct({
   turn: Schema.optional(Schema.Struct({
@@ -41,14 +41,14 @@ const TurnCompletedParams = Schema.Struct({
     items: Schema.optional(Schema.Array(Schema.Unknown))
   }))
 })
-const decodeTurnCompletedParams = Schema.decodeUnknownEither(TurnCompletedParams)
+const decodeTurnCompletedParams = Schema.decodeUnknownResult(TurnCompletedParams)
 
 const asRpcId = (value: unknown): string | number | undefined =>
   typeof value === "string" || typeof value === "number" ? value : undefined
 
 const asParams = (value: unknown): Record<string, unknown> => {
   const decoded = asRecord(value)
-  return Either.isRight(decoded) ? decoded.right : {}
+  return Result.isSuccess(decoded) ? decoded.success : {}
 }
 
 export type Inbound =
@@ -92,16 +92,16 @@ export const classifyInbound = (msg: Record<string, unknown>): Inbound => {
 export const decodeInboundLine = (line: string): Inbound | undefined => {
   if (line.trim().length === 0) return undefined
   const decoded = decodeLine(line)
-  if (Either.isLeft(decoded)) return undefined
-  const rec = asRecord(decoded.right)
-  if (Either.isLeft(rec)) return undefined
-  return classifyInbound(rec.right)
+  if (Result.isFailure(decoded)) return undefined
+  const rec = asRecord(decoded.success)
+  if (Result.isFailure(rec)) return undefined
+  return classifyInbound(rec.success)
 }
 
 /** Decode an arbitrary value as a string-keyed record. */
 export const decodeRecord = (value: unknown): Record<string, unknown> | undefined => {
   const rec = asRecord(value)
-  return Either.isRight(rec) ? rec.right : undefined
+  return Result.isSuccess(rec) ? rec.success : undefined
 }
 
 export const threadIdFromStartResult = (threadResult: unknown): string | undefined => {
@@ -137,7 +137,7 @@ const lastAgentText = (items: ReadonlyArray<unknown> | undefined): string | unde
   let text: string | undefined
   for (const it of items ?? []) {
     const item = decodeAgentMessageItem(it)
-    if (Either.isRight(item)) text = item.right.text
+    if (Result.isSuccess(item)) text = item.success.text
   }
   return text
 }
@@ -150,20 +150,20 @@ export const interpretNotification = (
   switch (method) {
     case "item/completed": {
       const item = decodeAgentMessageItem(params["item"])
-      return Either.isRight(item)
-        ? { _tag: "SetText", text: item.right.text }
+      return Result.isSuccess(item)
+        ? { _tag: "SetText", text: item.success.text }
         : { _tag: "Ignore" }
     }
     case "thread/tokenUsage/updated": {
       const parsed = decodeTokenUsageParams(params)
-      const last = Either.isRight(parsed) ? parsed.right.tokenUsage?.last : undefined
+      const last = Result.isSuccess(parsed) ? parsed.success.tokenUsage?.last : undefined
       return last != null
         ? { _tag: "SetUsage", usage: usageFromLast(last) }
         : { _tag: "Ignore" }
     }
     case "turn/completed": {
       const parsed = decodeTurnCompletedParams(params)
-      const turn = Either.isRight(parsed) ? parsed.right.turn : undefined
+      const turn = Result.isSuccess(parsed) ? parsed.success.turn : undefined
       if (turn?.status === "failed") {
         return { _tag: "Fail", message: `codex turn failed: ${JSON.stringify(turn.error)}` }
       }

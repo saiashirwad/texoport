@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { Effect, Either, Schema } from "effect"
+import { Effect, Result, Schema } from "effect"
 import { ClaudeEnvelope, parseClaudeCapture } from "../src/internal/claudeEnvelope.ts"
 import { CodexEvent, parseCodexCapture } from "../src/internal/codexEnvelope.ts"
 import {
@@ -12,7 +12,7 @@ import { asToolParams } from "../src/internal/toolkit.ts"
 
 describe("ClaudeEnvelope", () => {
   it("decodes success JSON", () => {
-    const decoded = Schema.decodeUnknownSync(Schema.parseJson(ClaudeEnvelope))(JSON.stringify({
+    const decoded = Schema.decodeUnknownSync(Schema.fromJsonString(ClaudeEnvelope))(JSON.stringify({
       is_error: false,
       result: "pong",
       session_id: "sess-1",
@@ -56,13 +56,13 @@ describe("ClaudeEnvelope", () => {
 
 describe("CodexEvent", () => {
   it("decodes event variants", () => {
-    const thread = Schema.decodeUnknownSync(Schema.parseJson(CodexEvent))(
+    const thread = Schema.decodeUnknownSync(Schema.fromJsonString(CodexEvent))(
       JSON.stringify({ type: "thread.started", thread_id: "t1" })
     )
     assert.equal(thread.type, "thread.started")
     assert.equal(thread.thread_id, "t1")
 
-    const item = Schema.decodeUnknownSync(Schema.parseJson(CodexEvent))(
+    const item = Schema.decodeUnknownSync(Schema.fromJsonString(CodexEvent))(
       JSON.stringify({
         type: "item.completed",
         item: { id: "item_0", type: "agent_message", text: "pong" }
@@ -101,7 +101,7 @@ describe("CodexEvent", () => {
   })
 
   it("rejects null JSON", () => {
-    assert.ok(Either.isLeft(Schema.decodeUnknownEither(Schema.parseJson(CodexEvent))("null")))
+    assert.ok(Result.isFailure(Schema.decodeUnknownResult(Schema.fromJsonString(CodexEvent))("null")))
   })
 })
 

@@ -1,5 +1,5 @@
-import { LanguageModel } from "@effect/ai"
-import { NodeContext, NodeRuntime } from "@effect/platform-node"
+import { LanguageModel } from "effect/unstable/ai"
+import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Effect, Schema } from "effect"
 import { ClaudeLanguageModel } from "../src/index.ts"
 
@@ -15,4 +15,4 @@ const program = Effect.gen(function*() {
   console.log("object:", person.value)
 }).pipe(Effect.provide(ClaudeLanguageModel.model()))
 
-NodeRuntime.runMain(program.pipe(Effect.provide(NodeContext.layer)))
+NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)))

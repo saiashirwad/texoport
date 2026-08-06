@@ -2,17 +2,21 @@
  * Shared toolkit plumbing for the CLI-backed providers: resolve the toolkit
  * once, run the provider's tool turn, and assemble the response parts.
  */
-import * as AiError from "@effect/ai/AiError"
-import * as LanguageModel from "@effect/ai/LanguageModel"
-import * as Prompt from "@effect/ai/Prompt"
-import type * as Response from "@effect/ai/Response"
-import * as Tool from "@effect/ai/Tool"
-import type * as Toolkit from "@effect/ai/Toolkit"
-import { CommandExecutor } from "@effect/platform"
+import type * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
 import * as Predicate from "effect/Predicate"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
+import {
+  AiError,
+  LanguageModel,
+  Prompt,
+  type Response,
+  Tool,
+  type Toolkit
+} from "effect/unstable/ai"
+import { ChildProcessSpawner } from "effect/unstable/process"
 import { malformedOutput } from "./errors.ts"
 import { assembleParts, assembleStreamParts, type Completion, type ToolParts } from "./response.ts"
 
@@ -40,6 +44,8 @@ export interface ToolInvokeResult {
   readonly isFailure: boolean
   readonly result: unknown
 }
+
+type SpawnerService = Context.Service.Shape<typeof ChildProcessSpawner.ChildProcessSpawner>
 
 /** Coerce tool call arguments into the params record shape Response expects. */
 export const asToolParams = (args: unknown): Record<string, unknown> =>
@@ -100,24 +106,32 @@ export const invokeTool = (
   name: string,
   args: unknown,
   id: string
-): Effect.Effect<ToolInvokeResult> =>
-  Effect.gen(function*() {
+): Effect.Effect<ToolInvokeResult> => {
+  const body = Effect.gen(function*() {
     pushToolCall(toolParts, id, name, args)
 
-    const outcome = yield* toolkit.handle(name, args as never).pipe(
-      Effect.map((r): ToolInvokeResult => ({
-        isFailure: r.isFailure,
-        result: r.encodedResult
-      })),
-      Effect.catchAll((error): Effect.Effect<ToolInvokeResult> =>
-        Effect.succeed({ isFailure: true, result: String(error) })
+    const outcome: ToolInvokeResult = yield* Effect.gen(function*() {
+      // v4 handle returns Effect<Stream<HandlerResult>>; take the last chunk.
+      const resultStream = yield* toolkit.handle(name, args as never, id)
+      const chunks = yield* Stream.runCollect(resultStream)
+      const last = chunks.at(-1)
+      if (last === undefined) {
+        return { isFailure: true, result: "tool handler produced no result" } satisfies ToolInvokeResult
+      }
+      return {
+        isFailure: last.isFailure,
+        result: last.encodedResult
+      } satisfies ToolInvokeResult
+    }).pipe(
+      Effect.catch((): Effect.Effect<ToolInvokeResult> =>
+        Effect.succeed({ isFailure: true, result: "tool handler failed" })
       )
     )
 
     pushToolResult(toolParts, id, name, outcome.result, outcome.isFailure)
     return outcome
   }).pipe(
-    Effect.catchAllDefect((error) =>
+    Effect.catchDefect((error) =>
       Effect.sync(() => {
         const message = String(error)
         if (!hasPart(toolParts, "tool-call", id)) {
@@ -130,6 +144,10 @@ export const invokeTool = (
       })
     )
   )
+  // Tool handlers may declare services; failures collapse into ToolInvokeResult so
+  // the public surface stays total with no leftover requirements.
+  return body as Effect.Effect<ToolInvokeResult>
+}
 
 /** Stringify a tool result for transport (MCP content / Codex contentItems). */
 export const encodeToolResultText = (result: unknown): string =>
@@ -145,6 +163,14 @@ const resolveActiveToolkit = (
     return Object.values(resolved.tools).length > 0 ? resolved : undefined
   })
 
+const provideSpawner = <A, E, R>(
+  effect: Effect.Effect<A, E, R | ChildProcessSpawner.ChildProcessSpawner>,
+  spawner: SpawnerService
+): Effect.Effect<A, E, Exclude<R, ChildProcessSpawner.ChildProcessSpawner>> =>
+  effect.pipe(
+    Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner))
+  )
+
 /**
  * Build a LanguageModel.Service that delegates tool-enabled calls to the
  * provider's tool turn runner and everything else to the plain CLI base.
@@ -152,8 +178,10 @@ const resolveActiveToolkit = (
 export const makeToolkitService = (
   module: string,
   base: LanguageModel.Service,
-  runTurn: (input: ToolTurnInput) => Effect.Effect<ToolTurn, AiError.AiError, CommandExecutor.CommandExecutor>,
-  executor: CommandExecutor.CommandExecutor
+  runTurn: (
+    input: ToolTurnInput
+  ) => Effect.Effect<ToolTurn, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner>,
+  spawner: SpawnerService
 ): LanguageModel.Service => {
   const failMalformed = malformedOutput(module)
 
@@ -163,13 +191,16 @@ export const makeToolkitService = (
     responseFormat: LanguageModel.ProviderOptions["responseFormat"],
     method: ToolMethod
   ) =>
-    runTurn({
-      prompt: Prompt.make(options.prompt),
-      tools: Object.values(toolkit.tools),
-      toolkit,
-      responseFormat,
-      method
-    }).pipe(Effect.provideService(CommandExecutor.CommandExecutor, executor))
+    provideSpawner(
+      runTurn({
+        prompt: Prompt.make(options.prompt),
+        tools: Object.values(toolkit.tools),
+        toolkit,
+        responseFormat,
+        method
+      }),
+      spawner
+    )
 
   return {
     generateText: (options: LanguageModel.GenerateTextOptions<any>) =>
@@ -181,7 +212,7 @@ export const makeToolkitService = (
         return new LanguageModel.GenerateTextResponse(assembleParts(completion, toolParts) as never)
       }),
 
-    generateObject: (options: LanguageModel.GenerateObjectOptions<any, any, any, any>) =>
+    generateObject: (options: LanguageModel.GenerateObjectOptions<any, any>) =>
       Effect.gen(function*() {
         const toolkit = yield* resolveActiveToolkit(options.toolkit as never)
         if (toolkit === undefined) return yield* base.generateObject(options as never)
@@ -192,7 +223,9 @@ export const makeToolkitService = (
           schema: options.schema
         }, "generateObject")
         const parts = assembleParts(completion, toolParts)
-        const value = yield* Schema.decode(Schema.parseJson(options.schema))(completion.text).pipe(
+        const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(options.schema))(
+          completion.text
+        ).pipe(
           Effect.mapError((cause) =>
             failMalformed("generateObject", "Generated object failed schema validation", cause)
           )

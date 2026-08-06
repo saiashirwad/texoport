@@ -4,11 +4,6 @@
  * Wire-format decoding lives in codexProtocol.ts; this file owns process I/O
  * and the request/response session loop.
  */
-import * as AiError from "@effect/ai/AiError"
-import type * as LanguageModel from "@effect/ai/LanguageModel"
-import type * as Prompt from "@effect/ai/Prompt"
-import * as Tool from "@effect/ai/Tool"
-import { Command, type CommandExecutor } from "@effect/platform"
 import * as Duration from "effect/Duration"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
@@ -17,6 +12,8 @@ import * as Option from "effect/Option"
 import * as Queue from "effect/Queue"
 import * as Ref from "effect/Ref"
 import * as Stream from "effect/Stream"
+import { AiError, type LanguageModel, type Prompt, Tool } from "effect/unstable/ai"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { malformedOutput, unknownError } from "./errors.ts"
 import {
   decodeInboundLine,
@@ -30,6 +27,7 @@ import {
 } from "./codexProtocol.ts"
 import { flattenPrompt } from "./prompt.ts"
 import type { Completion, Usage } from "./response.ts"
+import { schemaToJsonSchemaArg } from "./schema.ts"
 import {
   type AnyToolkit,
   invokeTool,
@@ -75,14 +73,12 @@ export const runTurnWithTools = (
     readonly toolParts: ToolPartBuffer
   },
   AiError.AiError,
-  CommandExecutor.CommandExecutor
+  ChildProcessSpawner.ChildProcessSpawner
 > =>
   Effect.scoped(Effect.gen(function*() {
     const { method, config, toolkit, tools, prompt, responseFormat } = input
     const timeout = config.timeout
-    const process = yield* Command.start(
-      Command.make(config.bin, "app-server", "--stdio")
-    ).pipe(
+    const process = yield* ChildProcess.make(config.bin, ["app-server", "--stdio"]).pipe(
       Effect.mapError((cause) => fail(method, "failed to spawn codex app-server", cause))
     )
 
@@ -121,9 +117,10 @@ export const runTurnWithTools = (
         yield* Ref.update(pending, (m) => HashMap.set(m, id, deferred))
         yield* write({ method: rpcMethod, id, params })
         return yield* Deferred.await(deferred).pipe(
-          Effect.timeoutFail({
+          Effect.timeoutOrElse({
             duration: timeout,
-            onTimeout: () => fail(method, `codex app-server request timed out: ${rpcMethod}`)
+            orElse: () =>
+              Effect.fail(fail(method, `codex app-server request timed out: ${rpcMethod}`))
           }),
           Effect.ensuring(Ref.update(pending, (m) => HashMap.remove(m, id)))
         )
@@ -215,7 +212,7 @@ export const runTurnWithTools = (
 
     const threadId = threadIdFromStartResult(threadResult)
     if (threadId === undefined) {
-      return yield* badOutput(method, "thread/start missing thread.id")
+      return yield* Effect.fail(badOutput(method, "thread/start missing thread.id"))
     }
 
     const turnParams: Record<string, unknown> = {
@@ -223,16 +220,16 @@ export const runTurnWithTools = (
       input: [{ type: "text", text: user, text_elements: [] }]
     }
     if (responseFormat.type === "json") {
-      turnParams["outputSchema"] = Tool.getJsonSchemaFromSchemaAst(responseFormat.schema.ast)
+      turnParams["outputSchema"] = JSON.parse(schemaToJsonSchemaArg(responseFormat.schema))
     }
 
     yield* request("turn/start", turnParams)
 
     yield* Deferred.await(turnDone).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: timeout,
-        onTimeout: () =>
-          fail(method, `codex turn timed out after ${Duration.toMillis(timeout)}ms`)
+        orElse: () =>
+          Effect.fail(fail(method, `codex turn timed out after ${Duration.toMillis(timeout)}ms`))
       })
     )
 

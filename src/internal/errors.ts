@@ -1,25 +1,25 @@
-import * as AiError from "@effect/ai/AiError"
-
-type AiErrorCtor<E> = new (args: {
-  readonly module: string
-  readonly method: string
-  readonly description: string
-  readonly cause?: unknown
-}) => E
-
-const errorFactory =
-  <E>(Ctor: AiErrorCtor<E>) =>
-  (module: string) =>
-  (method: string, description: string, cause?: unknown): E =>
-    new Ctor({
-      module,
-      method,
-      description,
-      ...(cause !== undefined ? { cause } : {})
-    })
+import { AiError } from "effect/unstable/ai"
 
 /** Build a module-scoped UnknownError factory so call sites stay one line. */
-export const unknownError = errorFactory(AiError.UnknownError)
+export const unknownError =
+  (module: string) =>
+  (method: string, description: string, cause?: unknown): AiError.AiError =>
+    AiError.make({
+      module,
+      method,
+      reason: new AiError.UnknownError({
+        description: cause === undefined ? description : `${description}: ${String(cause)}`
+      })
+    })
 
-/** Build a module-scoped MalformedOutput factory. */
-export const malformedOutput = errorFactory(AiError.MalformedOutput)
+/** Build a module-scoped InvalidOutputError factory. */
+export const malformedOutput =
+  (module: string) =>
+  (method: string, description: string, cause?: unknown): AiError.AiError =>
+    AiError.make({
+      module,
+      method,
+      reason: new AiError.InvalidOutputError({
+        description: cause === undefined ? description : `${description}: ${String(cause)}`
+      })
+    })

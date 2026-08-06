@@ -1,8 +1,8 @@
 /**
  * Shared `claude -p` argv construction for the plain CLI path and the MCP tool path.
  */
-import type * as LanguageModel from "@effect/ai/LanguageModel"
-import { schemaAstToJsonSchemaArg } from "./schema.ts"
+import type { LanguageModel } from "effect/unstable/ai"
+import { schemaToJsonSchemaArg } from "./schema.ts"
 
 export interface ClaudePrintArgsInput {
   readonly model?: string | undefined
@@ -35,7 +35,7 @@ export const buildClaudePrintArgs = (input: ClaudePrintArgsInput): Array<string>
   if (input.model !== undefined) args.push("--model", input.model)
   if (input.system !== undefined) args.push("--system-prompt", input.system)
   if (input.responseFormat.type === "json") {
-    args.push("--json-schema", schemaAstToJsonSchemaArg(input.responseFormat.schema.ast))
+    args.push("--json-schema", schemaToJsonSchemaArg(input.responseFormat.schema))
   }
   if (input.extraArgs !== undefined) args.push(...input.extraArgs)
 

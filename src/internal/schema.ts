@@ -1,10 +1,9 @@
-import * as Tool from "@effect/ai/Tool"
-import * as Either from "effect/Either"
+import * as Result from "effect/Result"
 import * as Schema from "effect/Schema"
-import type { AST as SchemaAST } from "effect/SchemaAST"
+import { Tool } from "effect/unstable/ai"
 
-const JsonObject = Schema.Record({ key: Schema.String, value: Schema.Unknown })
-const asObject = Schema.decodeUnknownEither(JsonObject)
+const JsonObject = Schema.Record(Schema.String, Schema.Unknown)
+const asObject = Schema.decodeUnknownResult(JsonObject)
 
 /**
  * Effect JSONSchema sometimes emits a bare root `$ref` + `$defs`.
@@ -12,20 +11,21 @@ const asObject = Schema.decodeUnknownEither(JsonObject)
  */
 export const hoistRootRef = (root: unknown): unknown => {
   const node = asObject(root)
-  if (Either.isLeft(node)) return root
+  if (Result.isFailure(node)) return root
 
-  const ref = node.right["$ref"]
+  const ref = node.success["$ref"]
   if (typeof ref !== "string" || !ref.startsWith("#/$defs/")) return root
 
-  const defs = asObject(node.right["$defs"])
-  if (Either.isLeft(defs)) return root
+  const defs = asObject(node.success["$defs"])
+  if (Result.isFailure(defs)) return root
 
-  const target = asObject(defs.right[ref.slice("#/$defs/".length)])
-  if (Either.isLeft(target)) return root
+  const target = asObject(defs.success[ref.slice("#/$defs/".length)])
+  if (Result.isFailure(target)) return root
 
-  const { $ref: _, ...rest } = node.right
-  return { ...rest, ...target.right, $defs: defs.right }
+  const { $ref: _, ...rest } = node.success
+  return { ...rest, ...target.success, $defs: defs.success }
 }
 
-export const schemaAstToJsonSchemaArg = (ast: SchemaAST): string =>
-  JSON.stringify(hoistRootRef(Tool.getJsonSchemaFromSchemaAst(ast)))
+/** Convert an Effect Schema into a JSON Schema string for CLI flags / app-server. */
+export const schemaToJsonSchemaArg = (schema: Schema.Top): string =>
+  JSON.stringify(hoistRootRef(Tool.getJsonSchemaFromSchema(schema as Schema.Constraint)))

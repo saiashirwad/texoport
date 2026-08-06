@@ -1,6 +1,5 @@
-import * as Response from "@effect/ai/Response"
-import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
+import { Response } from "effect/unstable/ai"
 
 export interface Usage {
   readonly inputTokens?: number | undefined
@@ -23,16 +22,23 @@ export interface Completion {
 const encodeUsage = (usage: Usage | undefined): typeof Response.Usage.Encoded => {
   const inputTokens = usage?.inputTokens
   const outputTokens = usage?.outputTokens
+  const totalTokens =
+    usage?.totalTokens ??
+    (inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined)
   return {
-    inputTokens,
-    outputTokens,
-    totalTokens:
-      usage?.totalTokens ??
-      (inputTokens !== undefined || outputTokens !== undefined
-        ? (inputTokens ?? 0) + (outputTokens ?? 0)
-        : undefined),
-    reasoningTokens: usage?.reasoningTokens,
-    cachedInputTokens: usage?.cachedInputTokens
+    inputTokens: {
+      total: inputTokens ?? totalTokens,
+      uncached: undefined,
+      cacheRead: usage?.cachedInputTokens,
+      cacheWrite: undefined
+    },
+    outputTokens: {
+      total: outputTokens,
+      text: outputTokens,
+      reasoning: usage?.reasoningTokens
+    }
   }
 }
 
@@ -62,13 +68,17 @@ export const toParts = (result: Completion): Array<Response.PartEncoded> => {
   const parts: Array<Response.PartEncoded> = []
   const meta = metadataEncoded(result)
   if (meta !== undefined) parts.push(meta)
-  parts.push({
+  const textPart: Response.TextPartEncoded = {
     type: "text",
-    text: result.text,
-    ...(result.providerKey !== undefined && result.raw !== undefined
-      ? { metadata: { [result.providerKey]: { raw: result.raw } } }
-      : {})
-  })
+    text: result.text
+  }
+  if (result.providerKey !== undefined && result.raw !== undefined) {
+    // Provider metadata must be JSON-serializable; stringify unknown raw payloads.
+    ;(textPart as { metadata?: Response.ProviderMetadata }).metadata = {
+      [result.providerKey]: { raw: JSON.parse(JSON.stringify(result.raw)) as never }
+    }
+  }
+  parts.push(textPart)
   parts.push(finishEncoded(result))
   return parts
 }
@@ -97,14 +107,15 @@ const toolPart = (
       params: part.params as never,
       providerExecuted: false
     })
-    : (Response.toolResultPart({
+    : Response.toolResultPart({
       id: part.id,
       name: part.name,
       isFailure: part.isFailure,
       result: part.result as never,
       encodedResult: part.result,
-      providerExecuted: false
-    }) as Response.AnyPart)
+      providerExecuted: false,
+      preliminary: false
+    })
 
 /** Decoded parts for a tool-enabled turn: metadata, tool calls/results, text, finish. */
 export const assembleParts = (
@@ -114,9 +125,10 @@ export const assembleParts = (
   const parts: Array<Response.AnyPart> = []
   if (completion.id !== undefined || completion.modelId !== undefined) {
     parts.push(Response.makePart("response-metadata", {
-      id: Option.fromNullable(completion.id),
-      modelId: Option.fromNullable(completion.modelId),
-      timestamp: Option.none()
+      id: completion.id,
+      modelId: completion.modelId,
+      timestamp: undefined,
+      request: undefined
     }))
   }
   for (const part of toolParts) parts.push(toolPart(part))
@@ -126,7 +138,8 @@ export const assembleParts = (
   parts.push(
     Response.makePart("finish", {
       reason: completion.finishReason ?? "stop",
-      usage: encodeUsage(completion.usage)
+      usage: new Response.Usage(encodeUsage(completion.usage)),
+      response: undefined
     })
   )
   return parts

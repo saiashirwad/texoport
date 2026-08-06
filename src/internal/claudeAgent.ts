@@ -8,18 +8,14 @@
  *   HTTP gateway (tool handlers) + temp MCP stdio server
  *   → claude -p --mcp-config … --allowedTools mcp__effect__*
  */
-import * as AiError from "@effect/ai/AiError"
-import type * as LanguageModel from "@effect/ai/LanguageModel"
-import type * as Prompt from "@effect/ai/Prompt"
-import type * as Tool from "@effect/ai/Tool"
-import type { CommandExecutor } from "@effect/platform"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import type * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
-import * as Runtime from "effect/Runtime"
+import type { AiError, LanguageModel, Prompt, Tool } from "effect/unstable/ai"
+import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 import { buildClaudePrintArgs } from "./claudeCli.ts"
 import { parseClaudeCapture } from "./claudeEnvelope.ts"
 import { unknownError } from "./errors.ts"
@@ -73,7 +69,7 @@ const listenGateway = (
   token: string,
   handler: (name: string, args: unknown) => Promise<{ isFailure: boolean; result: unknown }>
 ): Effect.Effect<{ port: number; close: () => void }, AiError.AiError> =>
-  Effect.async((resume) => {
+  Effect.callback((resume) => {
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method === "POST" && req.url === "/call") {
         // The gateway is loopback-only but otherwise unauthenticated on the
@@ -136,10 +132,10 @@ export const runTurnWithTools = (
     readonly toolParts: ToolPartBuffer
   },
   AiError.AiError,
-  CommandExecutor.CommandExecutor
+  ChildProcessSpawner.ChildProcessSpawner
 > =>
   Effect.scoped(Effect.gen(function*() {
-    const runtime = yield* Effect.runtime<never>()
+    const context = yield* Effect.context<never>()
     const toolParts: ToolPartBuffer = []
     let callSeq = 0
     const { method, config, toolkit, tools, prompt, responseFormat } = input
@@ -159,7 +155,9 @@ export const runTurnWithTools = (
         log(`tool call: ${name} ${JSON.stringify(args ?? {})}`)
 
         // invokeTool is total (handler failures + defects → failed tool result).
-        const out = await Runtime.runPromise(runtime)(invokeTool(toolkit, toolParts, name, args, id))
+        const out = await Effect.runPromiseWith(context)(
+          invokeTool(toolkit, toolParts, name, args, id)
+        )
         log(
           `tool ${out.isFailure ? "error" : "result"}: ${name} ` +
             `${encodeToolResultText(out.result).slice(0, 120)} (${Date.now() - callStartedAt}ms)`

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { Prompt } from "@effect/ai"
+import { Prompt } from "effect/unstable/ai"
 import { flattenPrompt } from "../src/internal/prompt.ts"
 
 describe("flattenPrompt", () => {

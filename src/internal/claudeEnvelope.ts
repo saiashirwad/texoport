@@ -1,7 +1,6 @@
-import * as AiError from "@effect/ai/AiError"
-import type * as Response from "@effect/ai/Response"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
+import { AiError, type Response } from "effect/unstable/ai"
 import { malformedOutput, unknownError } from "./errors.ts"
 import type { Completion } from "./response.ts"
 import type { SpawnCapture } from "./spawn.ts"
@@ -10,24 +9,22 @@ const MODULE = "ClaudeLanguageModel"
 const fail = unknownError(MODULE)
 const badOutput = malformedOutput(MODULE)
 
-const Number_ = Schema.Number.pipe(Schema.finite())
-
 class ClaudeUsage extends Schema.Class<ClaudeUsage>("ClaudeUsage")({
-  input_tokens: Schema.optional(Number_),
-  output_tokens: Schema.optional(Number_),
-  cache_read_input_tokens: Schema.optional(Number_)
+  input_tokens: Schema.optional(Schema.Finite),
+  output_tokens: Schema.optional(Schema.Finite),
+  cache_read_input_tokens: Schema.optional(Schema.Finite)
 }) {}
 
 export class ClaudeEnvelope extends Schema.Class<ClaudeEnvelope>("ClaudeEnvelope")({
-  is_error: Schema.optionalWith(Schema.Boolean, { default: () => false }),
-  result: Schema.optional(Schema.Union(Schema.String, Schema.Null)),
+  is_error: Schema.optional(Schema.Boolean),
+  result: Schema.optional(Schema.Union([Schema.String, Schema.Null])),
   session_id: Schema.optional(Schema.String),
   stop_reason: Schema.optional(Schema.String),
   usage: Schema.optional(ClaudeUsage),
-  modelUsage: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown }))
+  modelUsage: Schema.optional(Schema.Record(Schema.String, Schema.Unknown))
 }) {}
 
-const decodeEnvelope = Schema.decodeUnknown(Schema.parseJson(ClaudeEnvelope))
+const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeEnvelope))
 
 const finishReason = (reason: string | undefined): Response.FinishReason => {
   switch (reason) {
@@ -63,11 +60,11 @@ export const parseClaudeCapture = (
 
     // A non-zero exit is a failure even when the JSON envelope parses cleanly.
     if (capture.exitCode !== 0) {
-      return yield* fail(method, exitDescription(capture, envelope.result))
+      return yield* Effect.fail(fail(method, exitDescription(capture, envelope.result)))
     }
 
-    if (envelope.is_error) {
-      return yield* fail(method, envelope.result ?? "claude reported an error")
+    if (envelope.is_error === true) {
+      return yield* Effect.fail(fail(method, envelope.result ?? "claude reported an error"))
     }
 
     return {

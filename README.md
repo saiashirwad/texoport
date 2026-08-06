@@ -7,10 +7,12 @@ Effect AI `LanguageModel` providers that use your **local subscriptions** instea
 | `ClaudeLanguageModel` | Claude Code Pro / Max | `claude -p` | `claude -p` + MCP |
 | `CodexLanguageModel` | ChatGPT Plus / Pro | `codex exec` | `codex app-server` |
 
+Built for **Effect v4** (`effect@4.0.0-beta.*`). AI modules live under `effect/unstable/ai`.
+
 ## Install
 
 ```bash
-pnpm add effect-ai-subs effect @effect/ai @effect/platform @effect/platform-node
+pnpm add effect-ai-subs effect@^4.0.0-beta.104 @effect/platform-node@^4.0.0-beta.104
 ```
 
 Requires `claude` and/or `codex` on `PATH`, already logged in (`claude auth status` / `codex login`).
@@ -18,8 +20,8 @@ Requires `claude` and/or `codex` on `PATH`, already logged in (`claude auth stat
 ## Text
 
 ```ts
-import { LanguageModel } from "@effect/ai"
-import { NodeContext, NodeRuntime } from "@effect/platform-node"
+import { LanguageModel } from "effect/unstable/ai"
+import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Effect, Schema } from "effect"
 import { ClaudeLanguageModel } from "effect-ai-subs"
 
@@ -43,23 +45,23 @@ const program = Effect.gen(function* () {
   // ChatGPT: Effect.provide(CodexLanguageModel.model())
 )
 
-NodeRuntime.runMain(program.pipe(Effect.provide(NodeContext.layer)))
+NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)))
 ```
 
 ## Tool calling
 
-Same Effect `Toolkit` API as `@effect/ai-anthropic` / `@effect/ai-openai`. Handlers run in your process; the model calls them through the CLI.
+Same Effect `Toolkit` API as the upstream AI providers. Handlers run in your process; the model calls them through the CLI.
 
 ```ts
-import { LanguageModel, Tool, Toolkit } from "@effect/ai"
-import { NodeContext, NodeRuntime } from "@effect/platform-node"
+import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
+import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Effect, Schema } from "effect"
 import { ClaudeLanguageModel } from "effect-ai-subs"
 // import { CodexLanguageModel } from "effect-ai-subs"
 
 const GetWeather = Tool.make("get_weather", {
   description: "Get the current weather for a city",
-  parameters: { city: Schema.String },
+  parameters: Schema.Struct({ city: Schema.String }),
   success: Schema.Struct({
     city: Schema.String,
     tempC: Schema.Number,
@@ -88,7 +90,7 @@ const program = Effect.gen(function* () {
   Effect.provide(WeatherLive)
 )
 
-NodeRuntime.runMain(program.pipe(Effect.provide(NodeContext.layer)))
+NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)))
 ```
 
 Runnable copies: `examples/claude-tools.ts`, `examples/codex-tools.ts`.

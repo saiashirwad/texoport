@@ -1,4 +1,4 @@
-import type * as Prompt from "@effect/ai/Prompt"
+import type { Prompt } from "effect/unstable/ai"
 
 export interface FlattenedPrompt {
   readonly system: string | undefined

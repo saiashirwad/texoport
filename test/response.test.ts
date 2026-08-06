@@ -17,7 +17,8 @@ describe("toParts", () => {
     assert.equal(parts[1]?.type === "text" ? parts[1].text : "", "pong")
     assert.equal(parts[2]?.type, "finish")
     if (parts[2]?.type === "finish") {
-      assert.equal(parts[2].usage.totalTokens, 3)
+      assert.equal(parts[2].usage.inputTokens?.total, 1)
+      assert.equal(parts[2].usage.outputTokens?.total, 2)
     }
   })
 })
@@ -25,9 +26,7 @@ describe("toParts", () => {
 describe("toStreamParts", () => {
   it("emits start/delta/end/finish", async () => {
     const parts = await Effect.runPromise(
-      Stream.runCollect(toStreamParts({ text: "hi", id: "1" })).pipe(
-        Effect.map((chunk) => Array.from(chunk))
-      )
+      Stream.runCollect(toStreamParts({ text: "hi", id: "1" }))
     )
     assert.deepEqual(
       parts.map((p) => p.type),
