@@ -1,13 +1,13 @@
 # effect-ai-subs
 
-Effect AI `LanguageModel` providers that use your **local subscriptions** instead of API keys:
+Effect `LanguageModel` providers that call the CLIs you already pay for. No API keys. You need a Claude Code Pro/Max or ChatGPT Plus/Pro subscription, with `claude` or `codex` on `PATH` and logged in.
 
 | Provider | Subscription | Text | Toolkits |
 | --- | --- | --- | --- |
 | `ClaudeLanguageModel` | Claude Code Pro / Max | `claude -p` | `claude -p` + MCP |
 | `CodexLanguageModel` | ChatGPT Plus / Pro | `codex exec` | `codex app-server` |
 
-Built for **Effect v4** (`effect@4.0.0-beta.*`). AI modules live under `effect/unstable/ai`.
+Targets Effect v4 (`effect@4.0.0-beta.*`). The AI modules sit under `effect/unstable/ai`.
 
 ## Install
 
@@ -15,7 +15,7 @@ Built for **Effect v4** (`effect@4.0.0-beta.*`). AI modules live under `effect/u
 pnpm add effect-ai-subs effect@^4.0.0-beta.104 @effect/platform-node@^4.0.0-beta.104
 ```
 
-Requires `claude` and/or `codex` on `PATH`, already logged in (`claude auth status` / `codex login`).
+Confirm the CLI is signed in before you run anything: `claude auth status` or `codex login`.
 
 ## Text
 
@@ -50,7 +50,7 @@ NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)))
 
 ## Tool calling
 
-Same Effect `Toolkit` API as the upstream AI providers. Handlers run in your process; the model calls them through the CLI.
+Same `Toolkit` API as Effect's other AI providers. Your handlers run in-process. The model reaches them through the CLI (MCP for Claude, app-server for Codex).
 
 ```ts
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
@@ -93,7 +93,7 @@ const program = Effect.gen(function* () {
 NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)))
 ```
 
-Runnable copies: `examples/claude-tools.ts`, `examples/codex-tools.ts`.
+Full scripts live in `examples/claude-tools.ts` and `examples/codex-tools.ts`.
 
 ## Options
 
@@ -106,11 +106,11 @@ CodexLanguageModel.model(undefined, { sandbox: "read-only" })
 | --- | --- | --- |
 | `model` | CLI default | e.g. `sonnet`, or a Codex model id |
 | `bin` | `claude` / `codex` | Binary path |
-| `timeout` | `3 minutes` | Per-call |
+| `timeout` | `3 minutes` | Per call |
 | `sandbox` | `read-only` | Codex only |
 | `cwd` | process cwd | Working directory |
-| `extraArgs` | none | Additional CLI flags appended to the invocation |
-| `debug` | `false` | Claude only: log spawn/tool-call timings and tee CLI stderr live |
+| `extraArgs` | none | Extra flags passed straight to the CLI |
+| `debug` | `false` | Claude only: spawn and tool-call timings, plus live CLI stderr |
 
 ## License
 
