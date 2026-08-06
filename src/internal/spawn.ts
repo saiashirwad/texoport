@@ -10,6 +10,8 @@ export interface SpawnInput {
   readonly args: ReadonlyArray<string>
   readonly stdin: string
   readonly cwd?: string | undefined
+  /** Called with each decoded stderr chunk as it arrives (debug tee). */
+  readonly onStderr?: ((chunk: string) => void) | undefined
 }
 
 export interface SpawnCapture {
@@ -18,8 +20,17 @@ export interface SpawnCapture {
   readonly exitCode: number
 }
 
-const readText = (stream: Stream.Stream<Uint8Array, PlatformError>) =>
-  stream.pipe(Stream.decodeText(), Stream.runFold("", (acc, chunk) => acc + chunk))
+const readText = (
+  stream: Stream.Stream<Uint8Array, PlatformError>,
+  onChunk?: (chunk: string) => void
+) => {
+  const decoded = stream.pipe(Stream.decodeText())
+  return (onChunk === undefined
+    ? decoded
+    : decoded.pipe(Stream.tap((chunk) => Effect.sync(() => onChunk(chunk))))).pipe(
+      Stream.runFold("", (acc, chunk) => acc + chunk)
+    )
+}
 
 export const spawn = (
   input: SpawnInput
@@ -32,7 +43,10 @@ export const spawn = (
     const process = yield* Command.start(command)
     // Drain stdout and stderr concurrently: a child that fills the stderr pipe
     // while we await stdout EOF would otherwise stall until the caller's timeout.
-    const [stdout, stderr] = yield* Effect.all([readText(process.stdout), readText(process.stderr)])
+    const [stdout, stderr] = yield* Effect.all([
+      readText(process.stdout),
+      readText(process.stderr, input.onStderr)
+    ])
     const exitCode = yield* process.exitCode
     return { stdout, stderr, exitCode }
   }))

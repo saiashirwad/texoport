@@ -25,6 +25,8 @@ export interface Config {
   readonly cwd?: string | undefined
   readonly timeout?: Duration.DurationInput | undefined
   readonly extraArgs?: ReadonlyArray<string> | undefined
+  /** Log spawn/tool-call progress with timings and tee the CLI's stderr live. */
+  readonly debug?: boolean | undefined
 }
 
 export const model = (
@@ -73,7 +75,8 @@ export const make = (
             model: defaults.model,
             cwd: defaults.cwd,
             pathToClaude: defaults.bin,
-            timeout
+            timeout,
+            debug: defaults.debug
           }
         }),
       executor
@@ -104,6 +107,7 @@ const completeCli = (
     }
     if (defaults.extraArgs !== undefined) args.push(...defaults.extraArgs)
 
+    const startedAt = Date.now()
     const capture = yield* runCli({
       command: defaults.bin ?? "claude",
       args,
@@ -111,8 +115,12 @@ const completeCli = (
       cwd: defaults.cwd,
       module: "ClaudeLanguageModel",
       method: effectiveMethod,
-      timeout
+      timeout,
+      onStderr: defaults.debug === true ? (chunk) => process.stderr.write(chunk) : undefined
     })
+    if (defaults.debug === true) {
+      console.error(`[claude] exited ${capture.exitCode} after ${Date.now() - startedAt}ms`)
+    }
 
     return yield* parseClaudeCapture(capture, effectiveMethod)
   })

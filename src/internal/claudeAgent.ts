@@ -33,6 +33,7 @@ export interface ClaudeAgentConfig {
   readonly cwd?: string | undefined
   readonly pathToClaude?: string | undefined
   readonly timeout: Duration.Duration
+  readonly debug?: boolean | undefined
 }
 
 export interface ClaudeToolRunInput {
@@ -143,12 +144,19 @@ export const runTurnWithTools = (
     const toolParts: Array<Response.ToolCallPartEncoded | Response.ToolResultPartEncoded> = []
     let callSeq = 0
 
+    const startedAt = Date.now()
+    const log = input.config.debug === true
+      ? (msg: string) => console.error(`[claude-agent +${Date.now() - startedAt}ms] ${msg}`)
+      : () => {}
+
     const mcpTools = input.tools.map(toolMetadata)
     const token = randomUUID()
 
     const gateway = yield* Effect.acquireRelease(
       listenGateway(input.method, token, async (name, args) => {
         const id = `call_${++callSeq}`
+        const callStartedAt = Date.now()
+        log(`tool call: ${name} ${JSON.stringify(args ?? {})}`)
         toolParts.push({
           type: "tool-call",
           id,
@@ -161,6 +169,7 @@ export const runTurnWithTools = (
           const outcome = await Runtime.runPromise(runtime)(callTool(input.toolkit, name, args))
 
           if (outcome._tag === "ok") {
+            log(`tool result: ${name} ${outcome.isFailure ? "failed" : "ok"} (${Date.now() - callStartedAt}ms)`)
             toolParts.push({
               type: "tool-result",
               id,
@@ -172,6 +181,7 @@ export const runTurnWithTools = (
             return { isFailure: outcome.isFailure, result: outcome.encoded }
           }
 
+          log(`tool error: ${name} ${outcome.message} (${Date.now() - callStartedAt}ms)`)
           toolParts.push({
             type: "tool-result",
             id,
@@ -183,6 +193,7 @@ export const runTurnWithTools = (
           return { isFailure: true, result: outcome.message }
         } catch (error) {
           const message = String(error)
+          log(`tool defect: ${name} ${message} (${Date.now() - callStartedAt}ms)`)
           toolParts.push({
             type: "tool-result",
             id,
@@ -196,6 +207,7 @@ export const runTurnWithTools = (
       }),
       (gateway) => Effect.sync(() => gateway.close())
     )
+    log(`tool gateway listening on 127.0.0.1:${gateway.port}`)
 
     const { system, user } = flattenPrompt(input.prompt)
 
@@ -235,6 +247,7 @@ export const runTurnWithTools = (
       args.push("--json-schema", schemaAstToJsonSchemaArg(input.responseFormat.schema.ast))
     }
 
+    log(`spawning claude (${mcpTools.length} tools: ${mcpTools.map((t) => t.name).join(", ")})`)
     const capture = yield* runCli({
       command: input.config.pathToClaude ?? "claude",
       args,
@@ -242,9 +255,12 @@ export const runTurnWithTools = (
       cwd: input.config.cwd,
       module: "ClaudeLanguageModel",
       method: input.method,
-      timeout: input.config.timeout
+      timeout: input.config.timeout,
+      onStderr: input.config.debug === true ? (chunk) => process.stderr.write(chunk) : undefined
     })
+    log(`claude exited with code ${capture.exitCode}`)
 
     const completion = yield* parseClaudeCapture(capture, input.method)
+    log(`turn done: ${toolParts.length} tool parts, ${completion.text.length} chars of text`)
     return { completion, toolParts }
   }))

@@ -108,6 +108,7 @@ CodexLanguageModel.model(undefined, { sandbox: "read-only" })
 | `sandbox` | `read-only` | Codex only |
 | `cwd` | process cwd | Working directory |
 | `extraArgs` | none | Additional CLI flags appended to the invocation |
+| `debug` | `false` | Claude only: log spawn/tool-call timings and tee CLI stderr live |
 
 ## License
 
