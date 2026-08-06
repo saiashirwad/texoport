@@ -18,6 +18,12 @@ pnpm add @texoport/effect-ai-claude effect@4.0.0-beta.104 @effect/platform-node@
 
 `model` gives Effect AI a normal `LanguageModel` layer. The rest of the program uses the same API as any other Effect provider.
 
+The repository has this as a runnable example. From the repository root, run:
+
+```sh
+pnpm --filter @texoport/effect-ai-claude example
+```
+
 ```ts
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import * as ClaudeLanguageModel from "@texoport/effect-ai-claude"

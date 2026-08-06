@@ -18,6 +18,12 @@ pnpm add @texoport/effect-ai-codex effect@4.0.0-beta.104 @effect/platform-node@4
 
 `model` gives Effect AI a normal `LanguageModel` layer. Your application talks to `LanguageModel` and this package runs `codex exec` underneath.
 
+The repository has this as a runnable example. From the repository root, run:
+
+```sh
+pnpm --filter @texoport/effect-ai-codex example
+```
+
 ```ts
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import * as CodexLanguageModel from "@texoport/effect-ai-codex"

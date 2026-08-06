@@ -20,6 +20,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
+    "example": "node --experimental-strip-types examples/basic.ts",
     "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
