@@ -12,7 +12,7 @@ pnpm add @texoport/effect-parser-combinators effect
 
 ## Parse a string
 
-Use `parse(input, parser)` at the boundary. It returns an Effect whose success value is an Effect `Result`, so parse errors stay data instead of becoming thrown exceptions.
+Use `parser.pipe(parse(input))` at the boundary. `parse` returns the parser's ordinary typed Effect failure, with `ParseError` enriched with its one-based line and column. Use `Effect.result` only when the calling boundary needs failures as data.
 
 ```ts
 import { Effect } from "effect"
@@ -29,8 +29,8 @@ const parser = Effect.gen(function* () {
   return value
 })
 
-const result = Effect.runSync(parse("101", parser))
-// { _tag: "Success", success: 101 }
+const value = Effect.runSync(parser.pipe(parse("101")))
+// 101
 ```
 
 Most programs should use the built-in lexical parsers instead of repeating a character parser. They do one buffered scan, which matters on long inputs.
@@ -54,7 +54,7 @@ const assignment = Effect.gen(function* () {
   return Number(value)
 })
 
-Effect.runSync(parse("count=42", assignment))
+Effect.runSync(assignment.pipe(parse("count=42")))
 ```
 
 ## Parse a stream

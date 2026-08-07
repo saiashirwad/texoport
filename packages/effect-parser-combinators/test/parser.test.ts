@@ -25,7 +25,8 @@ import {
   takeWhileChar1,
 } from "../src/index.ts"
 
-const run = <A, E>(input: string, parser: Effect.Effect<A, E, any>) => Effect.runSync(parse(input, parser))
+const run = <A, E>(input: string, parser: Effect.Effect<A, E, any>) =>
+  Effect.runSync(Effect.result(parser.pipe(parse(input))))
 
 describe("parser combinators", () => {
   it("parses the documented IP address parser", () => {
@@ -56,6 +57,11 @@ describe("parser combinators", () => {
     if (parsed._tag === "Success") assert.deepEqual(parsed.success, [192, 168, 1, 1])
     const outOfRange = run("192.168.256.1", ip)
     assert.equal(outOfRange._tag, "Failure")
+  })
+
+  it("runs parsers directly or through pipe", () => {
+    assert.equal(Effect.runSync(parse(digit, "1")), "1")
+    assert.equal(Effect.runSync(digit.pipe(parse("1"))), "1")
   })
 
   it("commits ordered choice after consumption, unless attempt rewinds", () => {

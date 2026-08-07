@@ -7,7 +7,7 @@ const digits = "1234567890".repeat(1_000)
 const word = "parser-combinators".repeat(1_000)
 
 const run = <A>(input: string, parser: Effect.Effect<A, unknown, never>) =>
-  Effect.runSync(parse(input, parser))
+  Effect.runSync(parse(parser, input))
 
 const measure = (name: string, f: () => unknown) => {
   for (let i = 0; i < 20; i++) f()
