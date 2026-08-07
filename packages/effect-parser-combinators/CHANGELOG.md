@@ -1,5 +1,11 @@
 # @texoport/effect-parser-combinators
 
+## 0.2.1
+
+### Patch Changes
+
+- Publish the package README with usage examples for string and streaming parsers.
+
 ## 0.2.0
 
 ### Minor Changes
