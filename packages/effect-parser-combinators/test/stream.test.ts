@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { Effect, Schema, Stream } from "effect"
-import { char, digit, endOfInput, many, parseStream, streamElements, UpstreamError } from "../src/index.ts"
+import { char, digit, endOfInput, many, parseStream, streamElements, string, takeUntilChar, takeWhileChar1, UpstreamError } from "../src/index.ts"
 
 describe("streaming parser combinators", () => {
   it("parses continuously across chunk boundaries", () => {
@@ -11,6 +11,25 @@ describe("streaming parser combinators", () => {
       return "hello" as const
     })
     assert.equal(Effect.runSync(parseStream(Stream.fromIterable(["he", "llo"]), hello)), "hello")
+  })
+
+  it("uses bulk string and character-run parsers across chunk boundaries", () => {
+    const parser = Effect.gen(function* () {
+      yield* string("header:")
+      const value = yield* takeWhileChar1((char) => char >= "0" && char <= "9", "digit")
+      yield* endOfInput
+      return value
+    })
+    assert.equal(Effect.runSync(parseStream(Stream.fromIterable(["hea", "der:12", "34"]), parser)), "1234")
+  })
+
+  it("scans to a delimiter across chunk boundaries", () => {
+    const parser = Effect.gen(function* () {
+      const value = yield* takeUntilChar("\n")
+      yield* char("\n")
+      return value
+    })
+    assert.equal(Effect.runSync(parseStream(Stream.fromIterable(["first", " line\nrest"]), parser)), "first line")
   })
 
   it("emits elements while releasing consumed input", () => {

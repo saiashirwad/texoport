@@ -45,7 +45,11 @@ export const seek = (pos: number) =>
   Effect.gen(function* () {
     const { pos: cursor, base } = yield* ParseState
     if (pos < (yield* Ref.get(base))) {
-      return yield* Effect.die(new Error(`cannot rewind to position ${pos}: input before it was released`))
+      return yield* new ParseError({
+        pos,
+        expected: "input that has not been released",
+        found: undefined,
+      })
     }
     yield* Ref.set(cursor, pos)
   })
@@ -84,18 +88,70 @@ export const startsWith = (text: string): Effect.Effect<boolean, UpstreamError, 
     }
   })
 
+/** Consume and return the longest prefix for which `predicate` holds. */
+export const takeWhile = (
+  predicate: (char: string) => boolean,
+): Effect.Effect<string, UpstreamError, ParseState> =>
+  Effect.gen(function* () {
+    const { buffer, pos, base, fill, done } = yield* ParseState
+    const start = yield* Ref.get(pos)
+    let end = start
+
+    while (true) {
+      const input = yield* Ref.get(buffer)
+      const bufferBase = yield* Ref.get(base)
+      let index = end - bufferBase
+      while (index < input.length && predicate(input[index]!)) index++
+      end = bufferBase + index
+
+      if (index < input.length || (yield* Ref.get(done))) {
+        yield* Ref.set(pos, end)
+        return input.slice(start - bufferBase, index)
+      }
+      yield* fill
+    }
+  })
+
+/**
+ * Consume input before `delimiter`, leaving the delimiter unread. If input ends
+ * first, consume the remainder and return `None`.
+ */
+export const takeUntil = (
+  delimiter: string,
+): Effect.Effect<Option.Option<string>, UpstreamError, ParseState> =>
+  Effect.gen(function* () {
+    const { buffer, pos, base, fill, done } = yield* ParseState
+    const start = yield* Ref.get(pos)
+    while (true) {
+      const input = yield* Ref.get(buffer)
+      const bufferBase = yield* Ref.get(base)
+      const index = input.indexOf(delimiter, start - bufferBase)
+      if (index !== -1) {
+        yield* Ref.set(pos, bufferBase + index)
+        return Option.some(input.slice(start - bufferBase, index))
+      }
+      if (yield* Ref.get(done)) {
+        yield* Ref.set(pos, bufferBase + input.length)
+        return Option.none()
+      }
+      yield* fill
+    }
+  })
+
 export const matchRegex = (
   regex: RegExp,
 ): Effect.Effect<Option.Option<string>, UpstreamError, ParseState> =>
   Effect.gen(function* () {
     const { fill, done } = yield* ParseState
     while (true) {
+      // Match against a suffix rather than the complete buffer: regex anchors are
+      // relative to the parser cursor, so /^x/ must work after input was consumed.
       const rest = yield* remaining
       regex.lastIndex = 0
-      const match = regex.exec(rest)
-      const matched = match !== null && match.index === 0
+      const matched = regex.test(rest)
+      const end = regex.lastIndex
       const exhausted = yield* Ref.get(done)
-      if (matched && (match[0].length < rest.length || exhausted)) return Option.some(match[0])
+      if (matched && (end < rest.length || exhausted)) return Option.some(rest.slice(0, end))
       if (exhausted) return Option.none()
       yield* fill
     }
