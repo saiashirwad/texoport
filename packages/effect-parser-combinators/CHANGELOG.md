@@ -1,5 +1,11 @@
 # @texoport/effect-parser-combinators
 
+## 0.3.0
+
+### Minor Changes
+
+- 6a219fd: Make `parse` parser-first and pipeable, and preserve parse failures as typed Effect errors.
+
 ## 0.2.1
 
 ### Patch Changes
