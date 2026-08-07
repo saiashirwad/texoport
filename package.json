@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "description": "Private Effect-powered maintenance commands for the @texoport monorepo.",
+  "description": "Texoport's Effect libraries.",
   "packageManager": "pnpm@11.17.0",
   "engines": {
     "node": ">=22.14"
