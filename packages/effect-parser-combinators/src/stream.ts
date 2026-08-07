@@ -1,6 +1,6 @@
 import { Effect, Option, Scope, Stream } from "effect";
-import { UpstreamError } from "./error.ts";
-import { getPos, isEof, makeStreamState, ParseState, release } from "./state.ts";
+import { ParseError, UpstreamError } from "./error.ts";
+import { failHere, getPos, isEof, makeStreamState, ParseState, release } from "./state.ts";
 
 export const parseStream = <A, E, E2, R2>(
   input: Stream.Stream<string, E2, R2>,
@@ -17,7 +17,7 @@ export const parseStream = <A, E, E2, R2>(
 export const streamElements = <A, E, E2, R2>(
   input: Stream.Stream<string, E2, R2>,
   element: Effect.Effect<A, E, ParseState>,
-): Stream.Stream<A, E | UpstreamError, Exclude<R2, Scope.Scope>> =>
+): Stream.Stream<A, E | ParseError | UpstreamError, Exclude<R2, Scope.Scope>> =>
   Stream.unwrap(
     Effect.gen(function* () {
       const pull = yield* Stream.toPull(input);
@@ -29,9 +29,7 @@ export const streamElements = <A, E, E2, R2>(
         const mark = yield* withState(getPos);
         const value = yield* withState(element);
         if ((yield* withState(getPos)) === mark) {
-          return yield* Effect.die(
-            new Error("streamElements: element parser succeeded without consuming input"),
-          );
+          return yield* withState(failHere("streamElements: element parser must consume input"));
         }
         yield* withState(release);
         return [[value], Option.some(undefined)] as const;
